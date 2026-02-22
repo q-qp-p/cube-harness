@@ -138,25 +138,41 @@ def archive_experiment(results_dir: Path, exp_name: str) -> None:
 
 def _is_experiment_dir(dir_path: Path) -> bool:
     """Return True if dir_path is a valid (non-archived) experiment directory."""
-    return dir_path.is_dir() and not dir_path.name.startswith("_") and (dir_path / "trajectories").exists()
+    if not dir_path.is_dir() or dir_path.name.startswith("_"):
+        return False
+    if (dir_path / "trajectories").exists():
+        return True
+    return any(
+        f.name.endswith(".metadata.json") and ".archived_" not in f.name for f in dir_path.glob("*.metadata.json")
+    )
 
 
 def get_directory_contents(results_dir: Path) -> list[str]:
     """Return sorted list of experiment directory names with trajectory counts.
 
     Returns ["Select experiment directory"] + names sorted most-recent first.
-    Only includes non-archived directories that contain a 'trajectories/' subdirectory.
+    Includes directories that have trajectory metadata in the same dir (flat layout)
+    or under a ``trajectories/`` subdirectory (legacy).
     Directories whose names start with '_' (e.g. _archive) are excluded.
     """
     sentinel = "Select experiment directory"
     if not results_dir or not results_dir.exists():
         return [sentinel]
 
+    def count_trajectories(d: Path) -> int:
+        return len([f for f in d.glob("*.metadata.json") if ".archived_" not in f.name])
+
     exp_descriptions = []
     for dir_path in results_dir.iterdir():
         if not _is_experiment_dir(dir_path):
             continue
-        n_trajs = len(list((dir_path / "trajectories").glob("*.jsonl")))
+        n_trajs = count_trajectories(dir_path)
+        if n_trajs == 0:
+            traj_dir = dir_path / "trajectories"
+            if traj_dir.exists():
+                n_trajs = count_trajectories(traj_dir)
+        if n_trajs == 0:
+            continue
         exp_descriptions.append(f"{dir_path.name} ({n_trajs} trajectories)")
 
     return [sentinel] + sorted(exp_descriptions, reverse=True)
