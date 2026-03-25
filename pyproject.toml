@@ -10,33 +10,30 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "cube-standard",
+    "cube-standard>=0.1.0rc2",
+    "cube-browser-tool>=0.1.0",
     "pydantic~=2.0",
     "litellm~=1.80.8",
     "playwright==1.44",
     "Pillow~=11.0",
     "beautifulsoup4~=4.14",
     "numpy~=2.3.5",
-    "numpydoc~=1.10.0",
     "ray[default]>=2.52.1",
     "tenacity>=8.5.0",
     "python-dotenv~=1.2.0",
     "termcolor~=3.2",
-    "gradio~=5.49",
-    "matplotlib>=3.8",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp-proto-http>=1.20.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.39.1",
     "browsergym-core>=0.14.3",
     "mcp[cli]>=1.26",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.39.1",
 ]
 
 [project.optional-dependencies]
 # WorkArena benchmark dependencies
 workarena = [
-    "browsergym-workarena>=0.5.2",
+    "workarena-cube",
 ]
 # Terminal-Bench cube dependencies
 terminalbench = [
@@ -45,6 +42,10 @@ terminalbench = [
 # Miniwob cube dependencies
 miniwob = [
     "miniwob-cube",
+]
+# XRay trajectory viewer
+analyze = [
+    "gradio~=5.49",
 ]
 
 [build-system]
@@ -57,6 +58,7 @@ constraint-dependencies = ["pyasn1>=0.6.2", "cryptography>=46.0.5", "protobuf>=6
 [tool.uv.sources]
 terminalbench-cube = { path = "cubes/terminalbench-cube", editable = true }
 miniwob-cube = { path = "cubes/miniwob", editable = true }
+workarena-cube = { path = "cubes/workarena", editable = true }
 
 [tool.ruff]
 fix = true
@@ -73,7 +75,6 @@ line-ending = "auto"
 extend-select = ["I"] # sort imports
 
 [project.scripts]
-ch-viewer = "cube_harness.deprecated_viewer:main"
 ch-mcp-server = "cube_harness.mcp.server:main"
 ch-xray = "cube_harness.analyze.xray:main"
 
