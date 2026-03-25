@@ -329,12 +329,12 @@ class BrowsergymTool(ToolWithTelemetry, BrowserTool, BidBrowserActionSpace):
         """Navigate forward in browser history."""
         return self._execute_bgym_step("go_forward()")
 
-    def goto(self, url: str) -> str:
+    def goto(self, url: str) -> str:  # type: ignore[override]
         """Navigate to the specified URL."""
         action_str = f'goto(url="{url}")'
         return self._execute_bgym_step(action_str)
 
-    def noop(self) -> str:
+    def noop(self) -> str:  # type: ignore[override]
         """No operation action."""
         return self._execute_bgym_step("noop()")
 
