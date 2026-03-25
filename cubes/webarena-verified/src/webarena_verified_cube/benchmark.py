@@ -43,16 +43,8 @@ class WebArenaVerifiedBenchmark(Benchmark):
         num_tasks=812,
         tags=["browser", "web", "ui", "webarena"],
     )
-    # Populated lazily on first use to avoid side-effects at import time.
-    task_metadata: ClassVar[dict[str, TaskMetadata]] = {}
+    task_metadata: ClassVar[dict[str, TaskMetadata]] = _load_task_metadata()
     task_config_class: ClassVar[type[TaskConfig]] = WebArenaVerifiedTaskConfig
-    _task_metadata_loaded: ClassVar[bool] = False
-
-    @classmethod
-    def _ensure_task_metadata_loaded(cls) -> None:
-        if not cls._task_metadata_loaded:
-            cls.task_metadata = _load_task_metadata()
-            cls._task_metadata_loaded = True
 
     wav_config: WebArenaVerifiedConfig
     sites_filter: list[WebArenaSite] | None = None
@@ -78,7 +70,6 @@ class WebArenaVerifiedBenchmark(Benchmark):
         pass
 
     def get_task_configs(self) -> Generator[WebArenaVerifiedTaskConfig, None, None]:
-        self._ensure_task_metadata_loaded()
         wav = WebArenaVerified(config=self.wav_config)
         tasks = wav.get_tasks(sites=self.sites_filter, action=self.action_filter)
         if self.task_ids_filter is not None:
