@@ -19,20 +19,19 @@ from terminalbench_cube.benchmark import TerminalBenchBenchmark
 
 logger = logging.getLogger(__name__)
 
-# Each debug task replays a fixed action sequence.
-# These actions explore the environment and then stop — they don't solve
-# the task (that would require task-specific knowledge), but they exercise
-# the full pipeline: container launch → reset → step → evaluate → close.
+# Each debug task runs in oracle_mode: the ground-truth solution is uploaded
+# to /solution in the container during reset(). The debug agent applies it
+# and calls final_step, which triggers evaluate() → pytest → reward == 1.0.
+_FINAL = Action(name="final_step", arguments={})
+
 _TASK_ACTIONS: dict[str, list[Action]] = {
     "fix-git": [
-        Action(name="bash", arguments={"command": "ls -la /app"}),
-        Action(name="bash", arguments={"command": "cd /app/personal-site && git branch -a"}),
-        Action(name="final_step", arguments={}),
+        Action(name="bash", arguments={"command": "cd /app/personal-site && bash /solution/solve.sh 2>&1"}),
+        _FINAL,
     ],
     "overfull-hbox": [
-        Action(name="bash", arguments={"command": "ls -la /app"}),
-        Action(name="read_file", arguments={"path": "/app/main.tex"}),
-        Action(name="final_step", arguments={}),
+        Action(name="bash", arguments={"command": "bash /solution/solve.sh 2>&1"}),
+        _FINAL,
     ],
 }
 
@@ -71,6 +70,7 @@ def get_debug_benchmark() -> "Benchmark":
 
     return TerminalBenchBenchmark(
         container_backend=DaytonaContainerBackend(api_key=api_key),
+        oracle_mode=True,
     ).subset_from_list(list(_TASK_ACTIONS), benchmark_name_suffix="debug")
 
 
@@ -88,6 +88,7 @@ def get_debug_task_configs() -> list[TaskConfig]:
     benchmark = TerminalBenchBenchmark(
         container_backend=backend,
         task_ids=list(_TASK_ACTIONS),
+        oracle_mode=True,
     )
     benchmark.install()
     benchmark.setup()
@@ -110,5 +111,5 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s")
 
     results = run_debug_suite("terminalbench-cube", _this_module)
-    failed = [r for r in results if r["error"]]
+    failed = [r for r in results if r["error"] or not r["done"] or r["reward"] < 1.0]
     sys.exit(1 if failed else 0)

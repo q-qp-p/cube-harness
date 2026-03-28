@@ -74,7 +74,7 @@ class TerminalBenchTool(Tool):
     def write_file(self, path: str, content: str) -> str:
         """Write content to a file in the sandbox."""
         self._exec(f"mkdir -p {shlex.quote(str(Path(path).parent))}")
-        escaped = content.replace("\\", "\\\\").replace("'", "'\\''")
+        escaped = content.replace("'", "'\\''")
         self._exec(f"printf '%s' '{escaped}' > {shlex.quote(path)}")
         return f"Wrote {len(content)} bytes to {path}"
 
