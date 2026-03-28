@@ -1,7 +1,9 @@
 """Benchmark for swebench-live-cube — SWE-bench Live with test-based validation."""
 
 import logging
+import shutil
 from collections.abc import Generator
+from pathlib import Path
 from random import Random
 from typing import Any, ClassVar
 
@@ -45,6 +47,7 @@ class SWEBenchLiveBenchmark(Benchmark):
     repo_filter: str | None = None
     instance_ids: list[str] | None = None
     include_hints: bool = False
+    oracle_mode: bool = False
 
     # ── Benchmark lifecycle ────────────────────────────────────────
 
@@ -85,6 +88,7 @@ class SWEBenchLiveBenchmark(Benchmark):
                     "test_cmds": t.get("test_cmds", []),
                     "log_parser": t.get("log_parser", "pytest"),
                     "eval_timeout": 1800,
+                    "oracle_mode": self.oracle_mode,
                 },
             )
 
@@ -112,8 +116,16 @@ class SWEBenchLiveBenchmark(Benchmark):
         logger.info("Dataset download complete")
 
     def uninstall(self) -> None:
-        """Remove cached HuggingFace dataset (delegates to HF cache management)."""
-        logger.info(f"To free disk space, remove the HuggingFace cache for {self.dataset_name}")
+        """Remove cached HuggingFace dataset."""
+        from datasets import config as ds_config
+
+        cache_dir = Path(ds_config.HF_DATASETS_CACHE)
+        dataset_dir = cache_dir / self.dataset_name.replace("/", "___")
+        if dataset_dir.exists():
+            shutil.rmtree(dataset_dir)
+            logger.info(f"Removed dataset cache at {dataset_dir}")
+        else:
+            logger.info(f"No dataset cache found at {dataset_dir}, nothing to uninstall")
 
     # ── Private helpers ────────────────────────────────────────────
 

@@ -2,8 +2,8 @@
 
 Public API
 ----------
+get_debug_benchmark()         -> SWEBenchVerifiedBenchmark
 make_debug_agent(task_id)     -> DebugAgent
-get_debug_task_configs()      -> list[SWEBenchVerifiedTaskConfig]
 """
 
 from __future__ import annotations
@@ -12,27 +12,22 @@ import logging
 import os
 
 from cube.backends.daytona import DaytonaContainerBackend
+from cube.benchmark import Benchmark
 from cube.core import Action, ActionSchema, Observation
-from cube.task import TaskConfig
 
 from swebench_verified_cube.benchmark import SWEBenchVerifiedBenchmark
 
 logger = logging.getLogger(__name__)
 
-# Each debug task replays a fixed action sequence.
-# These actions explore the environment and then stop — they don't solve
-# the task, but they exercise the full pipeline: container launch -> reset -> step -> evaluate -> close.
+# Each debug task runs in oracle_mode: the gold patch is written to
+# /tmp/gold_patch.diff during reset(). The debug agent applies it
+# and calls final_step, which triggers evaluate() → tests → reward == 1.0.
+_APPLY_PATCH = Action(name="bash", arguments={"command": "cd /testbed && git apply /tmp/gold_patch.diff 2>&1"})
+_FINAL = Action(name="final_step", arguments={})
+
 _TASK_ACTIONS: dict[str, list[Action]] = {
-    "django__django-11099": [
-        Action(name="bash", arguments={"command": "ls -la /testbed"}),
-        Action(name="bash", arguments={"command": "git -C /testbed log --oneline -5"}),
-        Action(name="final_step", arguments={}),
-    ],
-    "astropy__astropy-12907": [
-        Action(name="bash", arguments={"command": "ls -la /testbed"}),
-        Action(name="read_file", arguments={"path": "/testbed/setup.cfg"}),
-        Action(name="final_step", arguments={}),
-    ],
+    "django__django-11099": [_APPLY_PATCH, _FINAL],
+    "astropy__astropy-12907": [_APPLY_PATCH, _FINAL],
 }
 
 
@@ -57,31 +52,25 @@ class DebugAgent:
         return self.get_action(obs)
 
 
-def make_debug_agent(task_id: str) -> DebugAgent:
-    return DebugAgent(task_id)
-
-
-def get_debug_task_configs() -> list[TaskConfig]:
-    """Return TaskConfigs for the debug tasks (cube.testing protocol).
-
-    Creates the benchmark, installs + sets up (to populate task_metadata),
-    then returns configs with container_backend pre-set so make() works without args.
-    """
+def get_debug_benchmark() -> Benchmark:
+    """Return a SWEBenchVerifiedBenchmark scoped to the debug tasks."""
     api_key = os.environ.get("DAYTONA_API_KEY")
     if not api_key:
         raise RuntimeError("DAYTONA_API_KEY environment variable is required for cube test swebench-verified-cube")
 
-    backend = DaytonaContainerBackend(api_key=api_key)
-    benchmark = SWEBenchVerifiedBenchmark(
-        container_backend=backend,
+    container_backend = DaytonaContainerBackend(api_key=api_key)
+    bench = SWEBenchVerifiedBenchmark(
+        container_backend=container_backend,
         instance_ids=list(_TASK_ACTIONS),
+        oracle_mode=True,
     )
-    benchmark.install()
-    benchmark.setup()
-    configs = list(benchmark.get_task_configs())
-    for tc in configs:
-        tc._container_backend = backend
-    return configs
+    bench.install()
+    bench.setup()
+    return bench.subset_from_list(list(_TASK_ACTIONS), benchmark_name_suffix="debug")
+
+
+def make_debug_agent(task_id: str) -> DebugAgent:
+    return DebugAgent(task_id)
 
 
 if __name__ == "__main__":
@@ -93,5 +82,5 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s")
 
     results = run_debug_suite("swebench-verified-cube", _this_module)
-    failed = [r for r in results if r["error"]]
+    failed = [r for r in results if r["error"] or not r["done"] or r["reward"] < 1.0]
     sys.exit(1 if failed else 0)

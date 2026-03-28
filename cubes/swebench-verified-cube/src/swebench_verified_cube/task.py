@@ -28,6 +28,12 @@ class SWEBenchVerifiedTask(Task):
         self.tool.reset()
         extra = self.metadata.extra_info
 
+        # Oracle mode: write gold patch for debug/baseline use
+        if extra.get("oracle_mode") and extra.get("patch"):
+            assert isinstance(self.tool, SWEBenchTool)
+            b64 = base64.b64encode(extra["patch"].encode()).decode()
+            self.tool.bash(f"echo '{b64}' | base64 -d > /tmp/gold_patch.diff")
+
         instruction = extra["problem_statement"]
         if extra.get("include_hints") and extra.get("hints_text"):
             instruction += f"\n\n## Hints\n{extra['hints_text']}"
@@ -134,18 +140,12 @@ class SWEBenchVerifiedTaskConfig(TaskConfig):
 
     task_metadata_snapshot: TaskMetadata | None = None
 
-    # Pre-set for debug/testing when make() is called without arguments
-    _container_backend: ContainerBackend | None = None
-
-    model_config = {"arbitrary_types_allowed": True}
-
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> SWEBenchVerifiedTask:
-        backend = container_backend or self._container_backend
-        if backend is None:
+        if container_backend is None:
             raise ValueError("SWEBenchVerifiedTaskConfig.make() requires a container_backend")
 
         metadata = self.task_metadata_snapshot
@@ -160,5 +160,5 @@ class SWEBenchVerifiedTaskConfig(TaskConfig):
             metadata=metadata,
             tool_config=self.tool_config or SWEBenchToolConfig(),
             runtime_context=runtime_context,
-            container_backend=backend,
+            container_backend=container_backend,
         )
