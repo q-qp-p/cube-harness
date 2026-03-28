@@ -38,11 +38,19 @@ class HarPlaywrightConfig(PlaywrightConfig):
 class HarBrowserTool(SyncPlaywrightTool):
     config: HarPlaywrightConfig
 
+    def _har_path(self) -> Path:
+        return Path(self.config.har_path)
+
+    def close(self) -> None:
+        super().close()
+        self._har_path().unlink(missing_ok=True)
+
     def network_trace(self) -> NetworkTrace:
-        har_path = Path(self.config.har_path)
-        trace = NetworkTrace.from_har(har_path)
-        har_path.unlink(missing_ok=True)
-        return trace
+        har_path = self._har_path()
+        try:
+            return NetworkTrace.from_har(har_path)
+        finally:
+            har_path.unlink(missing_ok=True)
 
 
 class NoopBrowserConfig(ToolConfig):
