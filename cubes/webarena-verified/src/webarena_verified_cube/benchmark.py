@@ -1,7 +1,7 @@
 import logging
 import urllib.error
 import urllib.request
-from typing import ClassVar, Generator
+from typing import Any, ClassVar, Generator
 
 from cube.benchmark import Benchmark, BenchmarkMetadata
 from cube.task import TaskConfig, TaskMetadata
@@ -35,6 +35,9 @@ def _load_task_metadata() -> dict[str, TaskMetadata]:
     }
 
 
+_TASK_METADATA_UNLOADED: dict[str, TaskMetadata] = {}
+
+
 class WebArenaVerifiedBenchmark(Benchmark):
     benchmark_metadata: ClassVar[BenchmarkMetadata] = BenchmarkMetadata(
         name="webarena-verified-cube",
@@ -43,10 +46,14 @@ class WebArenaVerifiedBenchmark(Benchmark):
         num_tasks=812,
         tags=["browser", "web", "ui", "webarena"],
     )
-    task_metadata: ClassVar[dict[str, TaskMetadata]] = _load_task_metadata()
+    task_metadata: ClassVar[dict[str, TaskMetadata]] = _TASK_METADATA_UNLOADED
     task_config_class: ClassVar[type[TaskConfig]] = WebArenaVerifiedTaskConfig
 
-    default_tool_config: ToolboxConfig = ToolboxConfig(  # type: ignore
+    def model_post_init(self, __context: Any) -> None:
+        if type(self).task_metadata is _TASK_METADATA_UNLOADED:
+            type(self).task_metadata = _load_task_metadata()
+
+    default_tool_config: ToolboxConfig = ToolboxConfig(
         tool_configs=[HarPlaywrightConfig(), SubmitResponseConfig()]
     )
 

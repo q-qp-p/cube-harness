@@ -1,6 +1,5 @@
 import logging
-from pathlib import Path
-from typing import Any
+from typing import Any, overload
 
 from cube.benchmark import RuntimeContext
 from cube.container import ContainerBackend
@@ -9,14 +8,21 @@ from cube.task import Task, TaskConfig
 from pydantic import PrivateAttr
 from webarena_verified.api.webarena_verified import WebArenaVerified
 from webarena_verified.types.config import WebArenaVerifiedConfig
-from webarena_verified.types.eval import EvalStatus, NetworkTrace, TaskEvalResult
+from webarena_verified.types.eval import EvalStatus, TaskEvalResult
 from webarena_verified.types.task import WebArenaVerifiedTask as WAVTask
 
-from cube_browser_tool import SyncPlaywrightTool
 from cube.tool import Toolbox, ToolboxConfig
-from webarena_verified_cube.tool import HarPlaywrightConfig, SubmitResponseConfig, SubmitResponseTool
+from webarena_verified_cube.tool import HarPlaywrightConfig, SubmitResponseConfig, SubmitResponseTool, WAVBrowserTool
 
 logger = logging.getLogger(__name__)
+
+
+@overload
+def _render_url(config: WebArenaVerifiedConfig, url: str, sites: list) -> str: ...
+@overload
+def _render_url(config: WebArenaVerifiedConfig, url: list[str], sites: list) -> list[str]: ...
+def _render_url(config: WebArenaVerifiedConfig, url: str | list[str], sites: list) -> str | list[str]:
+    return config.render_url(url, sites, strict=False)
 
 
 class WebArenaVerifiedTask(Task):
@@ -26,12 +32,14 @@ class WebArenaVerifiedTask(Task):
     _playwright_closed: bool = PrivateAttr(default=False)
 
     @property
-    def _playwright_tool(self) -> SyncPlaywrightTool:
+    def _browser_tool(self) -> WAVBrowserTool:
         if not isinstance(self.tool, Toolbox):
             raise TypeError(f"Expected Toolbox, got {type(self.tool).__name__}")
-        tool = self.tool.find_tool(SyncPlaywrightTool)
-        if tool is None:
-            raise RuntimeError("SyncPlaywrightTool not found in Toolbox")
+        from cube.tools.browser import BrowserTool
+
+        tool = self.tool.find_tool(BrowserTool)
+        if not isinstance(tool, WAVBrowserTool):
+            raise RuntimeError("BrowserTool not found in Toolbox or missing network_trace()")
         return tool
 
     @property
@@ -39,7 +47,7 @@ class WebArenaVerifiedTask(Task):
         if not isinstance(self.tool, Toolbox):
             raise TypeError(f"Expected Toolbox, got {type(self.tool).__name__}")
         tool = self.tool.find_tool(SubmitResponseTool)
-        if tool is None:
+        if not isinstance(tool, SubmitResponseTool):
             raise RuntimeError("SubmitResponseTool not found in Toolbox")
         return tool
 
@@ -51,9 +59,9 @@ class WebArenaVerifiedTask(Task):
         """
         self._playwright_closed = False
         self.tool.reset()
-        start_url = self.wav_config.render_url(self.wav_task.start_urls[0], list(self.wav_task.sites), strict=False)
-        self._playwright_tool.goto(start_url)
-        obs = Observation.from_text(self.wav_task.intent) + self._playwright_tool.page_obs()
+        start_url = _render_url(self.wav_config, self.wav_task.start_urls[0], list(self.wav_task.sites))
+        self._browser_tool.goto(start_url)
+        obs = Observation.from_text(self.wav_task.intent) + self._browser_tool.page_obs()
         info = {
             "task_id": self.wav_task.task_id,
             "sites": [s.value for s in self.wav_task.sites],
@@ -73,15 +81,10 @@ class WebArenaVerifiedTask(Task):
         submitted = self._submit_tool.get_submitted_response()
         if submitted is None:
             return 0.0, {"eval_status": EvalStatus.FAILURE, "evaluators_results": []}
-        # Close the browser context to flush the HAR to disk, then read it.
-        # The framework will call Toolbox.close() afterwards; SyncPlaywrightTool.stop()
-        # is safe to call twice (errors are logged but not re-raised).
         if not self._playwright_closed:
-            self._playwright_tool.close()
+            self._browser_tool.close()
             self._playwright_closed = True
-        har_path = Path(self._playwright_tool.config.har_path)
-        network_trace = NetworkTrace.from_har(har_path)
-        har_path.unlink(missing_ok=True)
+        network_trace = self._browser_tool.network_trace()
         wav = WebArenaVerified(config=self.wav_config)
         result: TaskEvalResult = wav.evaluate_task(
             task_id=self.wav_task.task_id,

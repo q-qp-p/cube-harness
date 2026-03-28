@@ -1,15 +1,30 @@
 import tempfile
+from pathlib import Path
+from typing import Any, Protocol, runtime_checkable
 
+from cube.core import Observation
 from cube.tool import Tool, ToolConfig, tool_action
+from cube.tools.browser import BrowserTool
 from cube_browser_tool import PlaywrightConfig, SyncPlaywrightTool
 
 from webarena_verified.types.agent_response import FinalAgentResponse, MainObjectiveType, PublicResultItem, Status
+from webarena_verified.types.eval import NetworkTrace
+
+
+@runtime_checkable
+class WAVBrowserTool(Protocol):
+    """Extends cube-standard's BrowserTool with network_trace() for HAR extraction."""
+
+    def goto(self, url: str) -> None: ...
+    def page_obs(self) -> Observation: ...
+    def close(self) -> None: ...
+    def network_trace(self) -> NetworkTrace: ...
 
 
 class HarPlaywrightConfig(PlaywrightConfig):
     har_path: str = ""
 
-    def make(self, container=None) -> SyncPlaywrightTool:
+    def make(self, container=None) -> "HarBrowserTool":
         with tempfile.NamedTemporaryFile(suffix=".har", delete=False) as f:
             har_path = f.name
         browser_with_har = self.browser.model_copy(
@@ -17,7 +32,56 @@ class HarPlaywrightConfig(PlaywrightConfig):
         )
         config_with_har = self.model_copy(update={"browser": browser_with_har, "har_path": har_path})
         session = browser_with_har.make()
-        return SyncPlaywrightTool(config=config_with_har, session=session)
+        return HarBrowserTool(config=config_with_har, session=session)
+
+
+class HarBrowserTool(SyncPlaywrightTool):
+    config: HarPlaywrightConfig
+
+    def network_trace(self) -> NetworkTrace:
+        har_path = Path(self.config.har_path)
+        trace = NetworkTrace.from_har(har_path)
+        har_path.unlink(missing_ok=True)
+        return trace
+
+
+class NoopBrowserConfig(ToolConfig):
+    def make(self, container=None) -> "NoopBrowserTool":
+        return NoopBrowserTool(config=self)
+
+
+_EMPTY_NETWORK_TRACE = NetworkTrace(is_playwright=False, src_file=Path("/dev/null"), events=())
+
+
+class NoopBrowserTool(BrowserTool):
+    def __init__(self, config: NoopBrowserConfig) -> None:
+        self.config = config
+
+    @property
+    def session(self):
+        return None
+
+    def noop(self) -> None:
+        pass
+
+    def reset(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def goto(self, url: str) -> None:
+        pass
+
+    def evaluate_js(self, js: str) -> Any:
+        return None
+
+    def page_obs(self) -> Observation:
+        return Observation.from_text("")
+
+    @staticmethod
+    def network_trace() -> NetworkTrace:
+        return _EMPTY_NETWORK_TRACE
 
 
 class SubmitResponseConfig(ToolConfig):

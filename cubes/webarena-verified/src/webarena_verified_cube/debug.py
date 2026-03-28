@@ -34,7 +34,7 @@ from webarena_verified.types.task import WebArenaSite
 
 from cube.tool import ToolboxConfig
 from webarena_verified_cube.benchmark import WebArenaVerifiedBenchmark
-from webarena_verified_cube.tool import HarPlaywrightConfig, SubmitResponseConfig
+from webarena_verified_cube.tool import NoopBrowserConfig, SubmitResponseConfig
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +79,7 @@ def get_debug_benchmark() -> Benchmark:
         wav_config=_DEBUG_WAV_CONFIG,
         task_ids_filter=[int(tid) for tid in _DEBUG_TASK_IDS],
         default_tool_config=ToolboxConfig(
-            tool_configs=[
-                HarPlaywrightConfig(),
-                SubmitResponseConfig(),
-            ]
+            tool_configs=[NoopBrowserConfig(), SubmitResponseConfig()]
         ),
     )
 
@@ -94,8 +91,5 @@ if __name__ == "__main__":
 
     results = run_debug_suite("webarena-verified-cube", _this_module)
 
-    # Smoke test: fail only on errors, not on reward.
-    # Reward may be 0 because evaluate() passes FinalAgentResponse to wav.evaluate_task()
-    # which expects str/dict — no live server is needed to verify infrastructure.
-    failed = [r for r in results if r["error"]]
+    failed = [r for r in results if r["error"] or r["reward"] != 1.0]
     sys.exit(1 if failed else 0)
