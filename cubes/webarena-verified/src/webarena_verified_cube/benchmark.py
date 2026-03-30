@@ -53,7 +53,7 @@ class WebArenaVerifiedBenchmark(Benchmark):
         if type(self).task_metadata is _TASK_METADATA_UNLOADED:
             type(self).task_metadata = _load_task_metadata()
 
-    default_tool_config: ToolboxConfig = ToolboxConfig(tool_configs=[HarPlaywrightConfig(), SubmitResponseConfig()])
+    default_tool_config: ToolboxConfig = ToolboxConfig(tool_configs=[HarPlaywrightConfig(), SubmitResponseConfig()])  # type: ignore
 
     wav_config: WebArenaVerifiedConfig
     sites_filter: list[WebArenaSite] | None = None
