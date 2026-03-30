@@ -5,6 +5,7 @@ from cube.benchmark import RuntimeContext
 from cube.container import ContainerBackend
 from cube.core import Observation
 from cube.task import Task, TaskConfig
+from cube.tools.browser import BrowserTool
 from pydantic import PrivateAttr
 from webarena_verified.api.webarena_verified import WebArenaVerified
 from webarena_verified.types.config import WebArenaVerifiedConfig
@@ -35,7 +36,6 @@ class WebArenaVerifiedTask(Task):
     def _browser_tool(self) -> WAVBrowserTool:
         if not isinstance(self.tool, Toolbox):
             raise TypeError(f"Expected Toolbox, got {type(self.tool).__name__}")
-        from cube.tools.browser import BrowserTool
 
         tool = self.tool.find_tool(BrowserTool)
         if not isinstance(tool, WAVBrowserTool):
