@@ -1,12 +1,13 @@
 import logging
 from pathlib import Path
 
-from agentlab2.agents.react import ReactAgentConfig
-from agentlab2.benchmarks.miniwob.benchmark import MiniWobBenchmark
-from agentlab2.exp_runner import run_with_ray
-from agentlab2.experiment import Experiment
-from agentlab2.llm import LLMConfig
-from agentlab2.tools.playwright import PlaywrightConfig
+from cube_browser_tool import PlaywrightConfig
+from miniwob_cube.benchmark import MiniWobBenchmark
+
+from cube_harness.agents.react import ReactAgentConfig
+from cube_harness.exp_runner import run_with_ray
+from cube_harness.experiment import Experiment
+from cube_harness.llm import LLMConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,8 +19,8 @@ def main() -> None:
     llm_config = LLMConfig(model_name="gpt-4.1-nano", temperature=1.0)
     agent_config = ReactAgentConfig(llm_config=llm_config)
 
-    tool_config = PlaywrightConfig(use_screenshot=True, headless=True, chromium_sandbox=False)
-    benchmark = MiniWobBenchmark(tool_config=tool_config)
+    tool_config = PlaywrightConfig(use_screenshot=True, headless=True)
+    benchmark = MiniWobBenchmark(default_tool_config=tool_config)
 
     exp = Experiment(
         name="hello_world_study",
