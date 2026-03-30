@@ -27,6 +27,7 @@ Usage:
 
 import sys
 
+from cube.tool import ToolboxConfig
 from cube_browser_playwright.playwright_session import PlaywrightSessionConfig
 from cube_chat_tool import ChatToolConfig
 
@@ -37,7 +38,6 @@ from cube_harness.exp_runner import run_sequentially, run_with_ray
 from cube_harness.experiment import Experiment
 from cube_harness.llm import LLMConfig
 from cube_harness.tools.browsergym import BrowsergymConfig
-from cube_harness.tools.toolbox import ToolboxConfig
 
 try:
     from workarena_cube.benchmark import WorkArenaBenchmark

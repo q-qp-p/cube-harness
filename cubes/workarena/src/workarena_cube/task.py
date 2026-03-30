@@ -10,11 +10,11 @@ from cube.benchmark import RuntimeContext
 from cube.container import ContainerBackend
 from cube.core import ActionSchema, Observation
 from cube.task import Task, TaskConfig
-from cube.tool import BrowserTool, tool_action
+from cube.tool import Toolbox, tool_action
+from cube.tools.browser import BrowserTool
 from cube_browser_playwright import PlaywrightSession, Viewport
 from cube_browser_tool import PlaywrightConfig, SyncPlaywrightTool
 from cube_chat_tool import ChatTool
-from cube_harness.tools.toolbox import Toolbox
 from pydantic import PrivateAttr
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ class WorkArenaTask(Task):
         obs = Observation.from_text(goal) + self._browser_tool.page_obs()
         if self._chat_tool is not None:
             self._chat_tool.add_message("user", goal)
-            obs = obs + self._chat_tool.chat_obs()
+            obs = obs + Observation.from_text(self._chat_tool.chat_obs())
         info = {
             "task_id": self.id,
             "task_class": task_class.__name__,
