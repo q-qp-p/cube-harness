@@ -51,46 +51,6 @@ class HarBrowserTool(SyncPlaywrightTool):
         finally:
             har_path.unlink(missing_ok=True)
 
-
-class NoopBrowserConfig(ToolConfig):
-    def make(self, container=None) -> "NoopBrowserTool":
-        return NoopBrowserTool(config=self)
-
-
-_EMPTY_NETWORK_TRACE = NetworkTrace(is_playwright=False, src_file=Path("/dev/null"), events=())
-
-
-class NoopBrowserTool(BrowserTool):
-    def __init__(self, config: NoopBrowserConfig) -> None:
-        self.config = config
-
-    @property
-    def session(self):
-        return None
-
-    def noop(self) -> None:
-        pass
-
-    def reset(self) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-    def goto(self, url: str) -> None:
-        pass
-
-    def evaluate_js(self, js: str) -> Any:
-        return None
-
-    def page_obs(self) -> Observation:
-        return Observation.from_text("")
-
-    @staticmethod
-    def network_trace() -> NetworkTrace:
-        return _EMPTY_NETWORK_TRACE
-
-
 class SubmitResponseConfig(ToolConfig):
     def make(self, container=None) -> "SubmitResponseTool":
         return SubmitResponseTool()
