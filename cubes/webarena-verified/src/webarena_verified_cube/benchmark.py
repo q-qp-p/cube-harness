@@ -78,7 +78,7 @@ class WebArenaVerifiedBenchmark(Benchmark):
             except urllib.error.URLError as e:
                 raise RuntimeError(
                     f"Cannot reach {site} at {url}. "
-                    f"Start the Docker container with: webarena-verified env start {site.value}"
+                    f"Start the Docker container with: `webarena-verified env start --site {site.value}`"
                 ) from e
 
     def close(self) -> None:
