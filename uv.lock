@@ -3927,8 +3927,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cube-browser-tool" },
-    { name = "cube-standard" },
+    { name = "cube-browser-tool", specifier = ">=0.2.0" },
+    { name = "cube-standard", specifier = ">=0.1.0rc4" },
     { name = "pillow" },
     { name = "webarena-verified" },
 ]

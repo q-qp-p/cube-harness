@@ -1,10 +1,9 @@
 import tempfile
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from cube.core import Observation
 from cube.tool import Tool, ToolConfig, tool_action
-from cube.tools.browser import BrowserTool
 from cube_browser_tool import PlaywrightConfig, SyncPlaywrightTool
 
 from webarena_verified.types.agent_response import FinalAgentResponse, MainObjectiveType, PublicResultItem, Status
@@ -50,6 +49,7 @@ class HarBrowserTool(SyncPlaywrightTool):
             return NetworkTrace.from_har(har_path)
         finally:
             har_path.unlink(missing_ok=True)
+
 
 class SubmitResponseConfig(ToolConfig):
     def make(self, container=None) -> "SubmitResponseTool":
