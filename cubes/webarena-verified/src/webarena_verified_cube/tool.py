@@ -43,7 +43,6 @@ class HarBrowserTool(SyncPlaywrightTool):
 
     def close(self) -> None:
         super().close()
-        self._har_path().unlink(missing_ok=True)
 
     def network_trace(self) -> NetworkTrace:
         har_path = self._har_path()
