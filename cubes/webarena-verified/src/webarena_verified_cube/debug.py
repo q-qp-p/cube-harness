@@ -78,9 +78,7 @@ def get_debug_benchmark() -> Benchmark:
     return WebArenaVerifiedBenchmark(
         wav_config=_DEBUG_WAV_CONFIG,
         task_ids_filter=[int(tid) for tid in _DEBUG_TASK_IDS],
-        default_tool_config=ToolboxConfig(
-            tool_configs=[NoopBrowserConfig(), SubmitResponseConfig()]
-        ),
+        default_tool_config=ToolboxConfig(tool_configs=[NoopBrowserConfig(), SubmitResponseConfig()]),
     )
 
 
