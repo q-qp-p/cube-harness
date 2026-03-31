@@ -72,7 +72,7 @@ def get_debug_benchmark() -> "Benchmark":
         oracle_mode=True,
     )
     bench.install()  # Ensure dataset is downloaded and available
-    bench.setup()    # Load dataset and populate task metadata
+    bench.setup()  # Load dataset and populate task metadata
     return bench.subset_from_list(list(_TASK_ACTIONS), benchmark_name_suffix="debug")
 
 
