@@ -3,7 +3,7 @@
 import importlib
 import logging
 import time
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from browsergym.workarena.tasks.base import AbstractServiceNowTask
 from cube.benchmark import RuntimeContext
@@ -15,6 +15,7 @@ from cube.tools.browser import BrowserTool
 from cube_browser_playwright import PlaywrightSession, Viewport
 from cube_browser_tool import PlaywrightConfig, SyncPlaywrightTool
 from cube_chat_tool import ChatTool
+from playwright.sync_api import Page
 from pydantic import PrivateAttr
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,21 @@ _SUPPORTED_ACTION_NAMES = frozenset(
         "send_message",
     }
 )
+
+
+@runtime_checkable
+class WorkArenaBrowserTool(Protocol):
+    """
+    Protocol for browser tools used by WorkArena tasks — requires a Playwright `page` attribute.
+    Both BrowsergymTool and SyncPlaywrightTool satisfy this protocol, so WorkArenaTask can work with either.
+    """
+
+    @property
+    def page(self) -> Page: ...
+
+    def noop(self) -> Any: ...
+
+    def page_obs(self) -> Observation: ...
 
 
 class WorkArenaCheatTool(SyncPlaywrightTool):
@@ -63,7 +79,25 @@ class WorkArenaCheatToolConfig(PlaywrightConfig):
 
 
 class WorkArenaTask(Task):
-    """CUBE Task wrapper for WorkArena ServiceNow tasks."""
+    """
+    CUBE Task wrapper for WorkArena ServiceNow tasks.
+
+    ---
+    Future optimization note:
+
+    Both `finished()` and `evaluate()` call `self._workarena_task.validate()`,
+    which makes a live ServiceNow API call. With `validate_per_step=True`,
+    the base `Task.step()` calls both on every step, resulting in
+    two identical round-trips per step.
+
+    Future improvement: cache the result of `validate()` keyed on
+    `(chat_key, hash(page.content()))` where:
+    `chat_key = tuple((m["role"], m["timestamp"], m["message"]) for m in chat_messages)`.
+    Both `finished()` and `evaluate()` would call a shared `_validate()` helper
+    that returns the cached result when the key is unchanged, and refreshes it otherwise.
+    The `page.content()` hash captures SPA state changes that do not update the URL,
+    at the cost of a DOM serialization on each cache-miss check.
+    """
 
     seed: int
     wait_first_page_time: float = 10.0
@@ -72,15 +106,19 @@ class WorkArenaTask(Task):
     _workarena_task: AbstractServiceNowTask | None = PrivateAttr(default=None)
 
     @property
-    def _browser_tool(self) -> BrowserTool:
+    def _browser_tool(self) -> WorkArenaBrowserTool:
         """Resolve the playwright tool whether the tool is direct or inside a Toolbox."""
         if isinstance(self.tool, Toolbox):
             tool = self.tool.find_tool(BrowserTool)
             if tool is None:
                 raise RuntimeError("No BrowserTool found in Toolbox")
-            return tool
-        assert isinstance(self.tool, BrowserTool), "Tool must be a BrowserTool"
-        return self.tool
+        else:
+            tool = self.tool
+        if not isinstance(tool, WorkArenaBrowserTool):
+            raise RuntimeError(
+                f"The browser tool must satisfy the WorkArenaBrowserTool protocol (e.g., BrowsergymTool or SyncPlaywrightTool), got {type(tool).__name__}"
+            )
+        return tool
 
     @property
     def _chat_tool(self) -> ChatTool | None:
@@ -108,10 +146,12 @@ class WorkArenaTask(Task):
         time.sleep(self.wait_first_page_time)
         logger.info(f"WorkArena task goal: {goal}")
 
-        obs = Observation.from_text(goal) + self._browser_tool.page_obs()
+        page_obs = self._browser_tool.page_obs()
         if self._chat_tool is not None:
             self._chat_tool.add_message("user", goal)
-            obs = obs + Observation.from_text(self._chat_tool.chat_obs())
+            obs = Observation.from_text(self._chat_tool.chat_obs()) + page_obs
+        else:
+            obs = Observation.from_text(goal) + page_obs
         info = {
             "task_id": self.id,
             "task_class": task_class.__name__,
@@ -145,7 +185,10 @@ class WorkArenaTask(Task):
 
     def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
         """Filter to BID browser actions supported by WorkArena."""
-        filtered = [a for a in actions if a.name in _SUPPORTED_ACTION_NAMES]
+        supported_actions = _SUPPORTED_ACTION_NAMES
+        if self._chat_tool is None:
+            supported_actions = supported_actions - {"send_message"}
+        filtered = [a for a in actions if a.name in supported_actions]
         logger.debug(f"Filtered {len(filtered)} out of {len(actions)} actions for WorkArena task.")
         return filtered
 
