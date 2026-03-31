@@ -7,10 +7,7 @@ from cube.core import Action, ActionSchema, Observation, StepError
 from cube.tool import Tool, tool_action
 from opentelemetry.trace import SpanKind
 
-try:
-    from cube_harness.tool import AsyncToolWithTelemetry
-except ImportError:
-    AsyncToolWithTelemetry = None  # type: ignore[assignment, misc]
+from cube_harness.tool import AsyncToolWithTelemetry
 
 
 class TestAbstractTool:
@@ -251,33 +248,31 @@ class TestToolExecutionSpans:
         assert "Element not found" in set_attr_calls["gen_ai.tool.call.result"]
 
 
-if AsyncToolWithTelemetry is not None:
+class MockAsyncTool(AsyncToolWithTelemetry):
+    """Async mock tool for telemetry tests."""
 
-    class MockAsyncTool(AsyncToolWithTelemetry):
-        """Async mock tool for telemetry tests."""
+    def __init__(self) -> None:
+        self.click_count = 0
 
-        def __init__(self) -> None:
-            self.click_count = 0
+    @tool_action
+    async def click(self, element_id: str) -> str:
+        """Click on an element.
 
-        @tool_action
-        async def click(self, element_id: str) -> str:
-            """Click on an element.
+        Args:
+            element_id: The element to click.
 
-            Args:
-                element_id: The element to click.
-
-            Returns:
-                Click confirmation message.
-            """
-            self.click_count += 1
-            return f"Clicked on {element_id}"
-
-    @pytest.fixture
-    def mock_async_tool() -> MockAsyncTool:
-        return MockAsyncTool()
+        Returns:
+            Click confirmation message.
+        """
+        self.click_count += 1
+        return f"Clicked on {element_id}"
 
 
-@pytest.mark.skipif(AsyncToolWithTelemetry is None, reason="AsyncTool not available in cube-standard")
+@pytest.fixture
+def mock_async_tool() -> MockAsyncTool:
+    return MockAsyncTool()
+
+
 class TestAsyncToolExecutionSpans:
     """Tests for AsyncToolWithTelemetry OpenTelemetry spans."""
 
