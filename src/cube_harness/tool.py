@@ -1,7 +1,7 @@
 import logging
 
 from cube.core import Action, Observation, StepError
-from cube.tool import Tool, AsyncTool
+from cube.tool import AsyncTool, Tool
 
 from cube_harness.metrics.tracer import GEN_AI_TOOL_CALL_RESULT, tool_span
 
