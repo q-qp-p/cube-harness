@@ -2,7 +2,6 @@
 
 import logging
 import shutil
-from collections.abc import Generator
 from pathlib import Path
 from random import Random
 from typing import Any, ClassVar
@@ -57,7 +56,9 @@ class SWEBenchVerifiedBenchmark(Benchmark):
         if "task_metadata" in self.__dict__:
             logger.info("SWE-bench Verified task_metadata already populated, skipping setup")
             return
-        ds = load_dataset(self.dataset_name, split="test")  # swebench-verified is only a single "test" split of 500 tasks.
+        ds = load_dataset(
+            self.dataset_name, split="test"
+        )  # swebench-verified is only a single "test" split of 500 tasks.
         tasks_data = self._filter_tasks(list(ds))  # type: ignore[arg-type]
 
         metadata: dict[str, TaskMetadata] = {}

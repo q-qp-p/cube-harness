@@ -8,9 +8,6 @@ dependencies = [
     "datasets",
 ]
 
-[tool.uv.sources]
-swebench-verified-cube = { path = "../swebench-verified-cube", editable = true }
-
 [project.entry-points."cube.benchmarks"]
 swebench-live-cube = "swebench_live_cube.benchmark:SWEBenchLiveBenchmark"
 

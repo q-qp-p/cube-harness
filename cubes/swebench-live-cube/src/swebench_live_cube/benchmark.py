@@ -1,9 +1,7 @@
 """Benchmark for swebench-live-cube — SWE-bench Live with test-based validation."""
 
 import logging
-from math import log
 import shutil
-from collections.abc import Generator
 from pathlib import Path
 from random import Random
 from typing import Any, ClassVar

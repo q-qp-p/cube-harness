@@ -12,7 +12,7 @@ from typing import Any
 from cube.benchmark import RuntimeContext
 from cube.container import ContainerBackend
 from cube.core import Observation
-from cube.task import Task, TaskConfig, TaskMetadata
+from cube.task import Task, TaskConfig
 
 from swebench_live_cube.tool import SWEBenchTool, SWEBenchToolConfig
 
@@ -94,15 +94,18 @@ class SWEBenchLiveTask(Task):
         b64 = base64.b64encode(patch.encode()).decode()
         self.tool.bash(f"echo '{b64}' | base64 -d > /tmp/patch.diff")
 
+        # Try git apply first
         result = self.tool.bash("cd /testbed && git apply /tmp/patch.diff 2>&1", timeout=30)
-        if "[exit_code:" not in result:
+        if "[exit_code:" not in result and "[error]" not in result:
             return result
 
+        # Fallback: git apply --reject
         result = self.tool.bash("cd /testbed && git apply --reject /tmp/patch.diff 2>&1", timeout=30)
-        if "[exit_code:" not in result:
+        if "[exit_code:" not in result and "[error]" not in result:
             return result
 
-        return self.tool.bash("cd /testbed && patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=30)
+        # Final fallback: patch
+        return self.tool.bash("cd /testbed && patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=60)
 
     def _run_test_cmds(self, test_cmds: list[str], timeout: int = 1800) -> str:
         """Run the explicit test commands from the dataset."""
@@ -161,7 +164,9 @@ class SWEBenchLiveTaskConfig(TaskConfig):
         if container_backend is None:
             raise ValueError("SWEBenchLiveTaskConfig.make() requires a container_backend")
 
+        # Import here to avoid circular import (benchmark imports task)
         from swebench_live_cube.benchmark import SWEBenchLiveBenchmark
+
         metadata = SWEBenchLiveBenchmark.task_metadata[self.task_id]
 
         return SWEBenchLiveTask(

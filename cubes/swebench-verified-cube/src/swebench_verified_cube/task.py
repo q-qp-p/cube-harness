@@ -9,7 +9,7 @@ from typing import Any
 from cube.benchmark import RuntimeContext
 from cube.container import ContainerBackend
 from cube.core import Observation
-from cube.task import Task, TaskConfig, TaskMetadata
+from cube.task import Task, TaskConfig
 
 from swebench_verified_cube.tool import SWEBenchTool, SWEBenchToolConfig
 
@@ -95,16 +95,16 @@ class SWEBenchVerifiedTask(Task):
 
         # Try git apply first
         result = self.tool.bash("cd /testbed && git apply /tmp/patch.diff 2>&1", timeout=30)
-        if "[exit_code:" not in result:
+        if "[exit_code:" not in result and "[error]" not in result:
             return result
 
         # Fallback: git apply --reject
         result = self.tool.bash("cd /testbed && git apply --reject /tmp/patch.diff 2>&1", timeout=30)
-        if "[exit_code:" not in result:
+        if "[exit_code:" not in result and "[error]" not in result:
             return result
 
         # Final fallback: patch
-        return self.tool.bash("cd /testbed && patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=30)
+        return self.tool.bash("cd /testbed && patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=60)
 
     def _run_tests(self, repo: str, test_directives: list[str], timeout: int = 1800) -> tuple[bool, str]:
         """Run test directives and return (all_passed, output)."""
@@ -148,6 +148,7 @@ class SWEBenchVerifiedTaskConfig(TaskConfig):
 
         # Import here to avoid circular import (benchmark imports task)
         from swebench_verified_cube.benchmark import SWEBenchVerifiedBenchmark
+
         metadata = SWEBenchVerifiedBenchmark.task_metadata[self.task_id]
 
         return SWEBenchVerifiedTask(
