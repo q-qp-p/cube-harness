@@ -4,9 +4,8 @@ version = "0.1.0"
 description = "SWE-bench Live — continuously updated, contamination-resistant GitHub issue resolution"
 requires-python = ">=3.12"
 dependencies = [
-    "cube-standard",
+    "cube-standard>=0.1.0rc4",
     "datasets",
-    "swebench-verified-cube",
 ]
 
 [tool.uv.sources]
