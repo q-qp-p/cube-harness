@@ -1,6 +1,7 @@
 """Benchmark for swebench-live-cube — SWE-bench Live with test-based validation."""
 
 import logging
+from math import log
 import shutil
 from collections.abc import Generator
 from pathlib import Path
@@ -99,6 +100,10 @@ class SWEBenchLiveBenchmark(Benchmark):
         object.__setattr__(self, "task_metadata", metadata)
         type(self).task_metadata = metadata
         logger.info(f"SWE-bench Live setup complete: {len(metadata)} tasks (split={self.split})")
+
+    def close(self) -> None:
+        # conainters are closed per-task in SWEBenchLiveTask.close(), so nothing to clean up here.
+        logger.info("SWE-bench Live benchmark closed")
 
     def install(self) -> None:
         """Pre-download the SWE-bench Live dataset from HuggingFace."""

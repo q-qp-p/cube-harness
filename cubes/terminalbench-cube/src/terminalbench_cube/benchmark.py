@@ -112,6 +112,10 @@ class TerminalBenchBenchmark(Benchmark):
         type(self).task_metadata = metadata
         logger.info(f"Terminal-Bench setup complete: {len(metadata)} tasks")
 
+    def close(self) -> None:
+        # Containers are closed per-task in TerminalBenchTask.close(), so nothing to clean up here.
+        logger.info("Terminal-Bench benchmark closed")
+
     # ── Dataset installation ───────────────────────────────────────
 
     def install(self) -> None:

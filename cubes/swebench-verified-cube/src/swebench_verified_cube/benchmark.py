@@ -95,6 +95,10 @@ class SWEBenchVerifiedBenchmark(Benchmark):
         type(self).task_metadata = metadata
         logger.info(f"SWE-bench Verified setup complete: {len(metadata)} tasks")
 
+    def close(self) -> None:
+        # conainters are closed per-task in SWEBenchVerifiedTask.close(), so nothing to clean up here.
+        logger.info("SWE-bench Verified benchmark closed")
+
     def install(self) -> None:
         """Pre-download the SWE-bench Verified dataset from HuggingFace."""
         logger.info(f"Downloading {self.dataset_name} from HuggingFace...")
