@@ -53,6 +53,10 @@ class SWEBenchLiveBenchmark(Benchmark):
 
     def _setup(self) -> None:
         """Load dataset from HuggingFace, apply filters, and populate task_metadata."""
+        # Only skip loading if this instance already has its own shadow (i.e. was
+        # already set up).  We deliberately do NOT guard on the class-level attr
+        # because that would prevent a fresh instance from loading its own task
+        # set when a previous setup already populated the ClassVar with a different set.
         if "task_metadata" in self.__dict__:
             logger.info("SWE-bench Live task_metadata already populated, skipping setup")
             return
@@ -95,7 +99,11 @@ class SWEBenchLiveBenchmark(Benchmark):
                 },
             )
 
+        # Populate instance-level shadow so each instance sees its own filtered view
+        # (e.g. after subset_from_list / subset_from_glob).
         object.__setattr__(self, "task_metadata", metadata)
+        # Also update the class-level attr so TaskConfig.make() can look up tasks
+        # via the ClassVar in the same process without re-running setup().
         type(self).task_metadata = metadata
         logger.info(f"SWE-bench Live setup complete: {len(metadata)} tasks (split={self.split})")
 
