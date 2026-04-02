@@ -8,6 +8,11 @@ dependencies = [
     "datasets",
 ]
 
+[project.optional-dependencies]
+debug = [
+    "cube-standard[docker]>=0.1.0rc4",
+]
+
 [project.entry-points."cube.benchmarks"]
 swebench-verified-cube = "swebench_verified_cube.benchmark:SWEBenchVerifiedBenchmark"
 

@@ -42,9 +42,8 @@ class SWEBenchTool(Tool):
 
     # ── Agent actions ──────────────────────────────────────────────
 
-    @tool_action
-    def bash(self, command: str, timeout: int = 120) -> str:
-        """Execute a bash command in the sandbox and return its output."""
+    def _run_bash(self, command: str, timeout: int = 120) -> str:
+        """Execute a command and return the full output (no truncation)."""
         result = self._exec(command, timeout=timeout)
         parts = []
         if result.stdout:
@@ -55,11 +54,20 @@ class SWEBenchTool(Tool):
             parts.append(f"[error] Command timed out after {timeout}s")
         elif result.exit_code != 0:
             parts.append(f"[exit_code: {result.exit_code}]")
-        output = "\n".join(parts) if parts else "(no output)"
+        return "\n".join(parts) if parts else "(no output)"
+
+    @tool_action
+    def bash(self, command: str, timeout: int = 120) -> str:
+        """Execute a bash command in the sandbox and return its output."""
+        output = self._run_bash(command, timeout=timeout)
         encoded = output.encode("utf-8")
         if len(encoded) <= self._config.max_output_bytes:
             return output
         return encoded[: self._config.max_output_bytes].decode("utf-8", errors="ignore") + "\n[truncated]"
+
+    def bash_unlimited(self, command: str, timeout: int = 120) -> str:
+        """Like bash() but without output truncation — for internal use (e.g. evaluate())."""
+        return self._run_bash(command, timeout=timeout)
 
     @tool_action
     def read_file(self, path: str) -> str:

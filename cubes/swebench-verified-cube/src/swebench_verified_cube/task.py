@@ -15,7 +15,9 @@ from swebench_verified_cube.tool import SWEBenchTool, SWEBenchToolConfig
 
 logger = logging.getLogger(__name__)
 
-CONDA_ACTIVATE = "source /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed"
+# POSIX-compatible: use `.` instead of `source`, skip silently if conda is absent.
+# Works with both bash (Daytona/Modal/Toolkit backends) and sh/dash (LocalContainer).
+CONDA_ACTIVATE = "if [ -f /opt/miniconda3/etc/profile.d/conda.sh ]; then . /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed; fi"
 
 
 class SWEBenchVerifiedTask(Task):
@@ -91,20 +93,20 @@ class SWEBenchVerifiedTask(Task):
         """Apply a unified diff patch to /testbed using git apply with fallbacks."""
         assert isinstance(self.tool, SWEBenchTool)
         b64 = base64.b64encode(patch.encode()).decode()
-        self.tool.bash(f"echo '{b64}' | base64 -d > /tmp/patch.diff")
+        self.tool.bash_unlimited(f"echo '{b64}' | base64 -d > /tmp/patch.diff")
 
         # Try git apply first
-        result = self.tool.bash("cd /testbed && git apply /tmp/patch.diff 2>&1", timeout=30)
+        result = self.tool.bash_unlimited("cd /testbed && git apply /tmp/patch.diff 2>&1", timeout=30)
         if "[exit_code:" not in result and "[error]" not in result:
             return result
 
         # Fallback: git apply --reject
-        result = self.tool.bash("cd /testbed && git apply --reject /tmp/patch.diff 2>&1", timeout=30)
+        result = self.tool.bash_unlimited("cd /testbed && git apply --reject /tmp/patch.diff 2>&1", timeout=30)
         if "[exit_code:" not in result and "[error]" not in result:
             return result
 
         # Final fallback: patch
-        return self.tool.bash("cd /testbed && patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=60)
+        return self.tool.bash_unlimited("cd /testbed && patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=60)
 
     def _run_tests(self, repo: str, test_directives: list[str], timeout: int = 1800) -> tuple[bool, str]:
         """Run test directives and return (all_passed, output)."""
@@ -114,20 +116,41 @@ class SWEBenchVerifiedTask(Task):
 
         test_cmd = self._build_test_cmd(repo, test_directives)
         cmd = f"{CONDA_ACTIVATE} && cd /testbed && {test_cmd}"
-        output = self.tool.bash(cmd, timeout=timeout)
+        output = self.tool.bash_unlimited(cmd, timeout=timeout)
 
         all_passed = "[exit_code:" not in output and "[error]" not in output
         return all_passed, output
 
     @staticmethod
+    def _normalize_django_directive(directive: str) -> str:
+        """Convert SWE-bench unittest verbose format to Django runtests.py format.
+
+        SWE-bench stores test directives in Python unittest verbose output format:
+            "test_method (module.path.ClassName)"
+        Django's runtests.py expects:
+            "module.path.ClassName.test_method"
+        """
+        import re
+        m = re.match(r"^(\w+)\s+\(([^)]+)\)$", directive.strip())
+        if m:
+            method, class_path = m.group(1), m.group(2)
+            return f"{class_path}.{method}"
+        return directive  # already in the right format or unrecognised — pass through
+
+    @staticmethod
     def _build_test_cmd(repo: str, test_directives: list[str]) -> str:
         """Build the test command based on repo's test framework."""
-        tests = " ".join(shlex.quote(t) for t in test_directives)
-
         if "django" in repo:
+            normalized = [
+                SWEBenchVerifiedTask._normalize_django_directive(t)
+                for t in test_directives
+            ]
+            tests = " ".join(shlex.quote(t) for t in normalized)
             return f"./tests/runtests.py --verbosity 2 {tests}"
         if "sympy" in repo:
+            tests = " ".join(shlex.quote(t) for t in test_directives)
             return f"bin/test -C --verbose {tests}"
+        tests = " ".join(shlex.quote(t) for t in test_directives)
         return f"python -m pytest --no-header -rN -p no:cacheprovider {tests}"
 
 

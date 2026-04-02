@@ -9,9 +9,8 @@ make_debug_agent(task_id)     -> DebugAgent
 from __future__ import annotations
 
 import logging
-import os
 
-from cube.backends.daytona import DaytonaContainerBackend
+from cube.backends import LocalContainerBackend
 from cube.benchmark import Benchmark
 from cube.core import Action, ActionSchema, Observation
 
@@ -54,11 +53,7 @@ class DebugAgent:
 
 def get_debug_benchmark() -> Benchmark:
     """Return a SWEBenchVerifiedBenchmark scoped to the debug tasks."""
-    api_key = os.environ.get("DAYTONA_API_KEY")
-    if not api_key:
-        raise RuntimeError("DAYTONA_API_KEY environment variable is required for cube test swebench-verified-cube")
-
-    container_backend = DaytonaContainerBackend(api_key=api_key)
+    container_backend = LocalContainerBackend()
     bench = SWEBenchVerifiedBenchmark(
         container_backend=container_backend,
         instance_ids=list(_TASK_ACTIONS),

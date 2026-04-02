@@ -94,20 +94,20 @@ class SWEBenchLiveTask(Task):
         """Apply a unified diff patch to /testbed using git apply with fallbacks."""
         assert isinstance(self.tool, SWEBenchTool)
         b64 = base64.b64encode(patch.encode()).decode()
-        self.tool.bash(f"echo '{b64}' | base64 -d > /tmp/patch.diff")
+        self.tool.bash_unlimited(f"echo '{b64}' | base64 -d > /tmp/patch.diff")
 
         # Try git apply first
-        result = self.tool.bash("cd /testbed && git apply /tmp/patch.diff 2>&1", timeout=30)
+        result = self.tool.bash_unlimited("cd /testbed && git apply /tmp/patch.diff 2>&1", timeout=30)
         if "[exit_code:" not in result and "[error]" not in result:
             return result
 
         # Fallback: git apply --reject
-        result = self.tool.bash("cd /testbed && git apply --reject /tmp/patch.diff 2>&1", timeout=30)
+        result = self.tool.bash_unlimited("cd /testbed && git apply --reject /tmp/patch.diff 2>&1", timeout=30)
         if "[exit_code:" not in result and "[error]" not in result:
             return result
 
         # Final fallback: patch
-        return self.tool.bash("cd /testbed && patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=60)
+        return self.tool.bash_unlimited("cd /testbed && patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=60)
 
     def _run_test_cmds(self, test_cmds: list[str], timeout: int = 1800) -> str:
         """Run the explicit test commands from the dataset."""
