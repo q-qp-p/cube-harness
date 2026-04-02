@@ -32,7 +32,7 @@ class SWEBenchLiveBenchmark(Benchmark):
         version="0.1.0",
         description="SWE-bench Live — continuously updated, contamination-resistant GitHub issue resolution",
         tags=["swe", "github", "docker", "live"],
-        num_tasks=1890,  # as of 2026-04-01
+        num_tasks=1888,  # as of 2026-04-01
     )
 
     task_metadata: ClassVar[dict[str, TaskMetadata]] = {}

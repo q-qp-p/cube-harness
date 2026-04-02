@@ -9,9 +9,7 @@ make_debug_agent(task_id)     -> DebugAgent
 from __future__ import annotations
 
 import logging
-import os
-
-from cube.backends.daytona import DaytonaContainerBackend
+from cube.backends import LocalContainerBackend
 from cube.benchmark import Benchmark
 from cube.core import Action, ActionSchema, Observation
 
@@ -26,8 +24,8 @@ _APPLY_PATCH = Action(name="bash", arguments={"command": "cd /testbed && git app
 _FINAL = Action(name="final_step", arguments={})
 
 _TASK_ACTIONS: dict[str, list[Action]] = {
-    "aws-cloudformation__cfn-lint-3798": [_APPLY_PATCH, _FINAL],
-    "deepset-ai__haystack-8489": [_APPLY_PATCH, _FINAL],
+    "cyclotruc__gitingest-94": [_APPLY_PATCH, _FINAL],
+    "dynaconf__dynaconf-1241": [_APPLY_PATCH, _FINAL],
 }
 
 
@@ -54,11 +52,7 @@ class DebugAgent:
 
 def get_debug_benchmark() -> Benchmark:
     """Return a SWEBenchLiveBenchmark scoped to the debug tasks."""
-    api_key = os.environ.get("DAYTONA_API_KEY")
-    if not api_key:
-        raise RuntimeError("DAYTONA_API_KEY environment variable is required for cube test swebench-live-cube")
-
-    container_backend = DaytonaContainerBackend(api_key=api_key)
+    container_backend = LocalContainerBackend()
     bench = SWEBenchLiveBenchmark(
         container_backend=container_backend,
         instance_ids=list(_TASK_ACTIONS),

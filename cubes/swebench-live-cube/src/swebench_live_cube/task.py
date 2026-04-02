@@ -18,7 +18,9 @@ from swebench_live_cube.tool import SWEBenchTool, SWEBenchToolConfig
 
 logger = logging.getLogger(__name__)
 
-CONDA_ACTIVATE = "source /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed"
+# POSIX-compatible: use `.` instead of `source`, skip silently if conda is absent.
+# Works with both bash (Daytona/Modal/Toolkit backends) and sh/dash (LocalContainer).
+CONDA_ACTIVATE = "if [ -f /opt/miniconda3/etc/profile.d/conda.sh ]; then . /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed; fi"
 
 
 class SWEBenchLiveTask(Task):
@@ -116,7 +118,7 @@ class SWEBenchLiveTask(Task):
         outputs = []
         for cmd in test_cmds:
             full_cmd = f"{CONDA_ACTIVATE} && cd /testbed && {cmd}"
-            output = self.tool.bash(full_cmd, timeout=timeout)
+            output = self.tool.bash_unlimited(full_cmd, timeout=timeout)
             outputs.append(output)
         return "\n".join(outputs)
 
@@ -136,12 +138,26 @@ class SWEBenchLiveTask(Task):
         p2p_failed = 0
 
         if log_parser == "pytest":
-            # pytest verbose output: "test_name PASSED" or "test_name FAILED"
+            # Support multiple pytest output formats:
+            #   verbose (-v):  "test_id PASSED [ X%]"   (test_id then status)
+            #   summary (-rA): "PASSED test_id"          (status then test_id)
+            #   legacy/other:  "test_id::PASSED"
+            # test_ids from the dataset may be truncated prefix strings (e.g.
+            # "test_validate[Invalid") which still work as substring matches.
             for test_id in fail_to_pass:
-                if f"{test_id} PASSED" in output or f"{test_id}::PASSED" in output:
+                if (
+                    f"{test_id} PASSED" in output
+                    or f"{test_id}::PASSED" in output
+                    or f"PASSED {test_id}" in output
+                ):
                     f2p_passed += 1
             for test_id in pass_to_pass:
-                if f"{test_id} FAILED" in output or f"{test_id} ERROR" in output:
+                if (
+                    f"{test_id} FAILED" in output
+                    or f"{test_id} ERROR" in output
+                    or f"FAILED {test_id}" in output
+                    or f"ERROR {test_id}" in output
+                ):
                     p2p_failed += 1
         else:
             # Generic fallback: check exit code patterns
