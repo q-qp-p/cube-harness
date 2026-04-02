@@ -59,10 +59,7 @@ def _build_task_metadata(rows_by_split: dict[str, list[dict[str, Any]]]) -> dict
         winning_row = split_rows[winning_split]
 
         if len(splits_present) > 1:
-            differing = [
-                s for s in splits_present[1:]
-                if split_rows[s] != winning_row
-            ]
+            differing = [s for s in splits_present[1:] if split_rows[s] != winning_row]
             if differing:
                 n_conflicts += 1
                 diff_lines = []
@@ -85,8 +82,7 @@ def _build_task_metadata(rows_by_split: dict[str, list[dict[str, Any]]]) -> dict
 
     if n_conflicts:
         logger.warning(
-            f"{n_conflicts} task(s) had conflicting data across splits. "
-            f"Split priority used: {_SPLIT_PRIORITY}."
+            f"{n_conflicts} task(s) had conflicting data across splits. Split priority used: {_SPLIT_PRIORITY}."
         )
 
     metadata: dict[str, TaskMetadata] = {}
@@ -145,10 +141,10 @@ class SWEBenchLiveBenchmark(Benchmark):
         num_tasks=1895,  # total unique tasks across all splits as of 2026-04-02
         # Splits overlap heavily: full(1887) ⊇ verified(499) ⊇ lite(300); test(1000) adds 8 unique tasks not in full.
         named_subsets={
-            "test":     ("extra_info.splits", "*'test'*"),
-            "lite":     ("extra_info.splits", "*'lite'*"),
+            "test": ("extra_info.splits", "*'test'*"),
+            "lite": ("extra_info.splits", "*'lite'*"),
             "verified": ("extra_info.splits", "*'verified'*"),
-            "full":     ("extra_info.splits", "*'full'*"),
+            "full": ("extra_info.splits", "*'full'*"),
         },
     )
 
@@ -188,9 +184,7 @@ class SWEBenchLiveBenchmark(Benchmark):
             rows_by_split[split] = list(ds)  # type: ignore[arg-type]
             logger.info(f"  {len(rows_by_split[split])} tasks in split={split!r}")
         metadata = _build_task_metadata(rows_by_split)
-        _TASK_METADATA_JSON.write_text(
-            json.dumps([tm.model_dump() for tm in metadata.values()], indent=2)
-        )
+        _TASK_METADATA_JSON.write_text(json.dumps([tm.model_dump() for tm in metadata.values()], indent=2))
         cls.task_metadata = metadata
         logger.info(f"Saved {len(metadata)} tasks to {_TASK_METADATA_JSON}")
 
@@ -221,7 +215,15 @@ class SWEBenchLiveBenchmark(Benchmark):
         # Apply per-instance runtime config if non-default
         if self.include_hints or self.oracle_mode:
             tasks = [
-                t.model_copy(update={"extra_info": {**t.extra_info, "include_hints": self.include_hints, "oracle_mode": self.oracle_mode}})
+                t.model_copy(
+                    update={
+                        "extra_info": {
+                            **t.extra_info,
+                            "include_hints": self.include_hints,
+                            "oracle_mode": self.oracle_mode,
+                        }
+                    }
+                )
                 for t in tasks
             ]
 

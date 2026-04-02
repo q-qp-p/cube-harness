@@ -66,9 +66,7 @@ class WebArenaVerifiedBenchmark(Benchmark):
             for t in wav.get_tasks()
         }
 
-        _TASK_METADATA_JSON.write_text(
-            json.dumps([tm.model_dump() for tm in metadata.values()], indent=2)
-        )
+        _TASK_METADATA_JSON.write_text(json.dumps([tm.model_dump() for tm in metadata.values()], indent=2))
         cls.task_metadata = metadata
         logger.info(f"Saved {len(metadata)} tasks to {_TASK_METADATA_JSON}")
 

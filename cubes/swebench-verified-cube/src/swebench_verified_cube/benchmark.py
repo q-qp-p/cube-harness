@@ -106,9 +106,7 @@ class SWEBenchVerifiedBenchmark(Benchmark):
         logger.info(f"Downloading {_DATASET_NAME} from HuggingFace...")
         ds = load_dataset(_DATASET_NAME, split="test")
         metadata = _build_task_metadata(list(ds))  # type: ignore[arg-type]
-        _TASK_METADATA_JSON.write_text(
-            json.dumps([tm.model_dump() for tm in metadata.values()], indent=2)
-        )
+        _TASK_METADATA_JSON.write_text(json.dumps([tm.model_dump() for tm in metadata.values()], indent=2))
         cls.task_metadata = metadata
         logger.info(f"Saved {len(metadata)} tasks to {_TASK_METADATA_JSON}")
 
@@ -139,7 +137,15 @@ class SWEBenchVerifiedBenchmark(Benchmark):
         # Apply per-instance runtime config if non-default
         if self.include_hints or self.oracle_mode:
             tasks = [
-                t.model_copy(update={"extra_info": {**t.extra_info, "include_hints": self.include_hints, "oracle_mode": self.oracle_mode}})
+                t.model_copy(
+                    update={
+                        "extra_info": {
+                            **t.extra_info,
+                            "include_hints": self.include_hints,
+                            "oracle_mode": self.oracle_mode,
+                        }
+                    }
+                )
                 for t in tasks
             ]
 
