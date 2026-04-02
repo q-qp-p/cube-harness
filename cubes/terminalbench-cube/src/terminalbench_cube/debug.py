@@ -9,7 +9,6 @@ make_debug_agent(task_id)     → DebugAgent
 from __future__ import annotations
 
 import logging
-import os
 
 from cube.benchmark import Benchmark
 from cube.core import Action, ActionSchema, Observation
