@@ -145,11 +145,7 @@ class SWEBenchLiveTask(Task):
             # test_ids from the dataset may be truncated prefix strings (e.g.
             # "test_validate[Invalid") which still work as substring matches.
             for test_id in fail_to_pass:
-                if (
-                    f"{test_id} PASSED" in output
-                    or f"{test_id}::PASSED" in output
-                    or f"PASSED {test_id}" in output
-                ):
+                if f"{test_id} PASSED" in output or f"{test_id}::PASSED" in output or f"PASSED {test_id}" in output:
                     f2p_passed += 1
             for test_id in pass_to_pass:
                 if (

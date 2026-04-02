@@ -131,6 +131,7 @@ class SWEBenchVerifiedTask(Task):
             "module.path.ClassName.test_method"
         """
         import re
+
         m = re.match(r"^(\w+)\s+\(([^)]+)\)$", directive.strip())
         if m:
             method, class_path = m.group(1), m.group(2)
@@ -141,10 +142,7 @@ class SWEBenchVerifiedTask(Task):
     def _build_test_cmd(repo: str, test_directives: list[str]) -> str:
         """Build the test command based on repo's test framework."""
         if "django" in repo:
-            normalized = [
-                SWEBenchVerifiedTask._normalize_django_directive(t)
-                for t in test_directives
-            ]
+            normalized = [SWEBenchVerifiedTask._normalize_django_directive(t) for t in test_directives]
             tests = " ".join(shlex.quote(t) for t in normalized)
             return f"./tests/runtests.py --verbosity 2 {tests}"
         if "sympy" in repo:
