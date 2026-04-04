@@ -151,10 +151,7 @@ class TerminalBenchBenchmark(Benchmark):
         tasks = self._filter_tasks(tasks)
 
         if self.oracle_mode:
-            tasks = [
-                t.model_copy(update={"extra_info": {**t.extra_info, "oracle_mode": True}})
-                for t in tasks
-            ]
+            tasks = [t.model_copy(update={"extra_info": {**t.extra_info, "oracle_mode": True}}) for t in tasks]
 
         metadata = {t.id: t for t in tasks}
         object.__setattr__(self, "task_metadata", metadata)
