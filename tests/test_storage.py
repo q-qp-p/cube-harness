@@ -1118,7 +1118,7 @@ class TestV1BackwardCompat:
 class TestEpisodeSummaryStatus:
 
     def test_final_line_written_on_complete(self, tmp_dir, sample_env_output):
-        from cube_harness.summary import EpisodeStatus, SummaryProcessor, StepSummary
+        from cube_harness.summary import EpisodeStatus, StepSummary, SummaryProcessor
 
         storage = FileStorage(tmp_dir)
         traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1", "agent_name": "A"})
@@ -1143,7 +1143,7 @@ class TestEpisodeSummaryStatus:
         assert final.turn == -1
 
     def test_failed_status_on_error(self, tmp_dir, sample_env_output):
-        from cube_harness.summary import EpisodeStatus, SummaryProcessor, StepSummary
+        from cube_harness.summary import EpisodeStatus, StepSummary, SummaryProcessor
 
         storage = FileStorage(tmp_dir)
         traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1", "agent_name": "A"})
