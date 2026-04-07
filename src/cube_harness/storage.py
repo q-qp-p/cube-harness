@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+EPISODES_DIR = "episodes"
+TRAJECTORIES_DIR = "trajectories"
+EPISODE_METADATA = "episode.metadata.json"
+STEPS_DIR = "steps"
+ARCHIVED_MARKER = ".archived_"
+
 
 class LLMCallRef(BaseModel):
     llm_call_id: str
@@ -79,13 +85,13 @@ class FileStorage:
         self._current_episode_dirs: dict[str, Path] = {}
 
     def _is_v2(self) -> bool:
-        return (self.output_dir / "episodes").exists()
+        return (self.output_dir / EPISODES_DIR).exists()
 
     def _has_v1(self) -> bool:
-        return (self.output_dir / "trajectories").exists()
+        return (self.output_dir / TRAJECTORIES_DIR).exists()
 
     def _find_episode_dir(self, trajectory_id: str) -> Path | None:
-        episodes_dir = self.output_dir / "episodes"
+        episodes_dir = self.output_dir / EPISODES_DIR
         if not episodes_dir.exists():
             return None
         if trajectory_id in self._current_episode_dirs:
@@ -93,7 +99,7 @@ class FileStorage:
         for ep_dir in episodes_dir.iterdir():
             if not ep_dir.is_dir():
                 continue
-            metadata_path = ep_dir / "episode.metadata.json"
+            metadata_path = ep_dir / EPISODE_METADATA
             if metadata_path.exists():
                 with open(metadata_path) as f:
                     data = json.load(f)
@@ -104,10 +110,10 @@ class FileStorage:
 
     def save_trajectory(self, trajectory: Trajectory, allow_overwrite: bool = False) -> None:
         dir_name = _episode_dir_name(trajectory)
-        ep_dir = self.output_dir / "episodes" / dir_name
+        ep_dir = self.output_dir / EPISODES_DIR / dir_name
         is_resave = trajectory.id in self._current_episode_dirs
 
-        metadata_path = ep_dir / "episode.metadata.json"
+        metadata_path = ep_dir / EPISODE_METADATA
         if not is_resave and ep_dir.exists() and metadata_path.exists():
             if not allow_overwrite:
                 raise FileExistsError(
@@ -117,7 +123,7 @@ class FileStorage:
             self._archive_episode(ep_dir)
 
         ep_dir.mkdir(parents=True, exist_ok=True)
-        (ep_dir / "steps").mkdir(exist_ok=True)
+        (ep_dir / STEPS_DIR).mkdir(exist_ok=True)
         self._current_episode_dirs[trajectory.id] = ep_dir
 
         trajectory_data = trajectory.model_dump(exclude={"steps"})
@@ -146,7 +152,7 @@ class FileStorage:
 
     def _write_step(self, ep_dir: Path, step_num: int, step: TrajectoryStep) -> None:
         filename = _step_filename(step_num, step)
-        step_path = ep_dir / "steps" / filename
+        step_path = ep_dir / STEPS_DIR / filename
         step_path.write_bytes(_serialize_step(step))
 
     def load_trajectory(self, trajectory_id: str) -> Trajectory:
@@ -156,12 +162,12 @@ class FileStorage:
         return self._v1_load_trajectory(trajectory_id)
 
     def _v2_load_trajectory(self, ep_dir: Path, trajectory_id: str) -> Trajectory:
-        metadata_path = ep_dir / "episode.metadata.json"
+        metadata_path = ep_dir / EPISODE_METADATA
         with open(metadata_path) as f:
             trajectory_data = json.load(f)
 
         steps: list[TrajectoryStep] = []
-        steps_dir = ep_dir / "steps"
+        steps_dir = ep_dir / STEPS_DIR
         if steps_dir.exists():
             for step_file in sorted(steps_dir.iterdir()):
                 step_data = _read_step_file(step_file)
@@ -175,7 +181,7 @@ class FileStorage:
         ep_dir = self._find_episode_dir(trajectory_id)
         if ep_dir is None:
             raise FileNotFoundError(f"Episode directory not found for trajectory: {trajectory_id}")
-        steps_dir = ep_dir / "steps"
+        steps_dir = ep_dir / STEPS_DIR
         step_files = sorted(steps_dir.iterdir())
         if step_index >= len(step_files):
             raise IndexError(f"Step index {step_index} out of range (have {len(step_files)} steps)")
@@ -184,7 +190,7 @@ class FileStorage:
         return TrajectoryStep.model_validate(step_data)
 
     def _v1_load_trajectory(self, trajectory_id: str) -> Trajectory:
-        traj_dir = self.output_dir / "trajectories"
+        traj_dir = self.output_dir / TRAJECTORIES_DIR
         metadata_path = traj_dir / f"{trajectory_id}.metadata.json"
         steps_path = traj_dir / f"{trajectory_id}.jsonl"
 
@@ -204,11 +210,8 @@ class FileStorage:
                     if line.strip():
                         step_data = json.loads(line)
                         step_data = self._resolve_llm_call_refs(step_data, trajectory_id, i)
-                        if "output" not in step_data:
-                            if "obs" in step_data:
-                                step_data = {"output": step_data}
-                            elif "actions" in step_data:
-                                step_data = {"output": step_data}
+                        if "output" not in step_data and ("obs" in step_data or "actions" in step_data):
+                            step_data = {"output": step_data}
                         step = TrajectoryStep.model_validate(step_data)
                         steps.append(step)
 
@@ -242,9 +245,9 @@ class FileStorage:
     def load_trajectory_metadata(self, trajectory_id: str) -> Trajectory:
         ep_dir = self._find_episode_dir(trajectory_id)
         if ep_dir is not None:
-            metadata_path = ep_dir / "episode.metadata.json"
+            metadata_path = ep_dir / EPISODE_METADATA
         else:
-            traj_dir = self.output_dir / "trajectories"
+            traj_dir = self.output_dir / TRAJECTORIES_DIR
             metadata_path = traj_dir / f"{trajectory_id}.metadata.json"
 
         if not metadata_path.exists():
@@ -262,12 +265,12 @@ class FileStorage:
     def load_all_trajectory_metadata(self) -> list[Trajectory]:
         trajectories: list[Trajectory] = []
 
-        episodes_dir = self.output_dir / "episodes"
+        episodes_dir = self.output_dir / EPISODES_DIR
         if episodes_dir.exists():
             for ep_dir in episodes_dir.iterdir():
-                if not ep_dir.is_dir() or ".archived_" in ep_dir.name:
+                if not ep_dir.is_dir() or ARCHIVED_MARKER in ep_dir.name:
                     continue
-                metadata_path = ep_dir / "episode.metadata.json"
+                metadata_path = ep_dir / EPISODE_METADATA
                 if not metadata_path.exists():
                     continue
                 try:
@@ -280,10 +283,10 @@ class FileStorage:
                 except Exception as e:
                     logger.error(f"Failed to load episode metadata {ep_dir.name}: {e}")
 
-        traj_dir = self.output_dir / "trajectories"
+        traj_dir = self.output_dir / TRAJECTORIES_DIR
         if traj_dir.exists():
             for metadata_file in traj_dir.glob("*.metadata.json"):
-                if ".archived_" in metadata_file.name:
+                if ARCHIVED_MARKER in metadata_file.name:
                     continue
                 trajectory_id = metadata_file.stem.replace(".metadata", "")
                 try:
@@ -296,50 +299,52 @@ class FileStorage:
     def list_trajectory_ids(self) -> list[str]:
         ids: list[str] = []
 
-        episodes_dir = self.output_dir / "episodes"
+        episodes_dir = self.output_dir / EPISODES_DIR
         if episodes_dir.exists():
             for ep_dir in episodes_dir.iterdir():
-                if not ep_dir.is_dir() or ".archived_" in ep_dir.name:
+                if not ep_dir.is_dir() or ARCHIVED_MARKER in ep_dir.name:
                     continue
-                metadata_path = ep_dir / "episode.metadata.json"
+                metadata_path = ep_dir / EPISODE_METADATA
                 if metadata_path.exists():
                     with open(metadata_path) as f:
                         data = json.load(f)
                     ids.append(data.get("id", ep_dir.name))
 
-        traj_dir = self.output_dir / "trajectories"
+        traj_dir = self.output_dir / TRAJECTORIES_DIR
         if traj_dir.exists():
-            for f in traj_dir.glob("*.metadata.json"):
-                if ".archived_" not in f.name:
-                    ids.append(f.stem.replace(".metadata", ""))
+            ids.extend(
+                f.stem.replace(".metadata", "")
+                for f in traj_dir.glob("*.metadata.json")
+                if ARCHIVED_MARKER not in f.name
+            )
 
         return ids
 
     def list_trajectory_ids_with_mtime(self) -> dict[str, float]:
         result: dict[str, float] = {}
 
-        episodes_dir = self.output_dir / "episodes"
+        episodes_dir = self.output_dir / EPISODES_DIR
         if episodes_dir.exists():
             for ep_dir in episodes_dir.iterdir():
-                if not ep_dir.is_dir() or ".archived_" in ep_dir.name:
+                if not ep_dir.is_dir() or ARCHIVED_MARKER in ep_dir.name:
                     continue
-                metadata_path = ep_dir / "episode.metadata.json"
+                metadata_path = ep_dir / EPISODE_METADATA
                 if not metadata_path.exists():
                     continue
                 with open(metadata_path) as f:
                     data = json.load(f)
                 traj_id = data.get("id", ep_dir.name)
                 mtime = metadata_path.stat().st_mtime
-                steps_dir = ep_dir / "steps"
+                steps_dir = ep_dir / STEPS_DIR
                 if steps_dir.exists():
                     for step_file in steps_dir.iterdir():
                         mtime = max(mtime, step_file.stat().st_mtime)
                 result[traj_id] = mtime
 
-        traj_dir = self.output_dir / "trajectories"
+        traj_dir = self.output_dir / TRAJECTORIES_DIR
         if traj_dir.exists():
             for metadata_file in traj_dir.glob("*.metadata.json"):
-                if ".archived_" in metadata_file.name:
+                if ARCHIVED_MARKER in metadata_file.name:
                     continue
                 traj_id = metadata_file.stem.replace(".metadata", "")
                 mtime = metadata_file.stat().st_mtime
@@ -369,12 +374,12 @@ class FileStorage:
 
         trajectories: list[Trajectory] = []
 
-        episodes_dir = self.output_dir / "episodes"
+        episodes_dir = self.output_dir / EPISODES_DIR
         if episodes_dir.exists():
             for ep_dir in episodes_dir.iterdir():
-                if not ep_dir.is_dir() or ".archived_" in ep_dir.name:
+                if not ep_dir.is_dir() or ARCHIVED_MARKER in ep_dir.name:
                     continue
-                metadata_path = ep_dir / "episode.metadata.json"
+                metadata_path = ep_dir / EPISODE_METADATA
                 if not metadata_path.exists():
                     continue
                 try:
@@ -386,10 +391,10 @@ class FileStorage:
                 except Exception as e:
                     logger.error(f"Failed to load episode {ep_dir.name}: {e}")
 
-        traj_dir = self.output_dir / "trajectories"
+        traj_dir = self.output_dir / TRAJECTORIES_DIR
         if traj_dir.exists():
             for metadata_file in traj_dir.glob("*.metadata.json"):
-                if ".archived_" in metadata_file.name:
+                if ARCHIVED_MARKER in metadata_file.name:
                     continue
                 trajectory_id = metadata_file.stem.replace(".metadata", "")
                 try:
