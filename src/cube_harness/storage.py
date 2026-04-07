@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+import msgpack
+import zstandard
 from cube.core import EnvironmentOutput
 from pydantic import BaseModel
 
@@ -32,9 +34,35 @@ class Storage(Protocol):
     def update_experiment_summary(self, trajectory: Trajectory) -> None: ...
 
 
+_ZST_COMPRESSOR = zstandard.ZstdCompressor(level=3)
+_ZST_DECOMPRESSOR = zstandard.ZstdDecompressor()
+
+_STEP_EXTENSIONS = (".msgpack.zst", ".json")
+
+
+def _serialize_step(step: TrajectoryStep) -> bytes:
+    data = step.model_dump(serialize_as_any=True)
+    packed = msgpack.packb(data, use_bin_type=True)
+    return _ZST_COMPRESSOR.compress(packed)
+
+
+def _deserialize_step(raw: bytes) -> dict:
+    decompressed = _ZST_DECOMPRESSOR.decompress(raw)
+    return msgpack.unpackb(decompressed, raw=False)
+
+
 def _step_filename(step_num: int, step: TrajectoryStep) -> str:
     suffix = "obs" if isinstance(step.output, EnvironmentOutput) else "act"
-    return f"{step_num:03d}_{suffix}.json"
+    return f"{step_num:03d}_{suffix}.msgpack.zst"
+
+
+def _read_step_file(path: Path) -> dict | None:
+    if path.name.endswith(".msgpack.zst"):
+        return _deserialize_step(path.read_bytes())
+    if path.suffix == ".json":
+        with open(path) as f:
+            return json.loads(f.read())
+    return None
 
 
 def _episode_dir_name(trajectory: Trajectory) -> str:
@@ -125,8 +153,7 @@ class FileStorage:
     def _write_step(self, ep_dir: Path, step_num: int, step: TrajectoryStep) -> None:
         filename = _step_filename(step_num, step)
         step_path = ep_dir / "steps" / filename
-        with open(step_path, "w") as f:
-            f.write(step.model_dump_json(serialize_as_any=True))
+        step_path.write_bytes(_serialize_step(step))
 
     def load_trajectory(self, trajectory_id: str) -> Trajectory:
         ep_dir = self._find_episode_dir(trajectory_id)
@@ -143,13 +170,24 @@ class FileStorage:
         steps_dir = ep_dir / "steps"
         if steps_dir.exists():
             for step_file in sorted(steps_dir.iterdir()):
-                if step_file.suffix == ".json":
-                    with open(step_file) as f:
-                        step_data = json.loads(f.read())
+                step_data = _read_step_file(step_file)
+                if step_data is not None:
                     steps.append(TrajectoryStep.model_validate(step_data))
 
         trajectory_data["steps"] = steps
         return Trajectory.model_validate(trajectory_data)
+
+    def load_step(self, trajectory_id: str, step_index: int) -> TrajectoryStep:
+        ep_dir = self._find_episode_dir(trajectory_id)
+        if ep_dir is None:
+            raise FileNotFoundError(f"Episode directory not found for trajectory: {trajectory_id}")
+        steps_dir = ep_dir / "steps"
+        step_files = sorted(steps_dir.iterdir())
+        if step_index >= len(step_files):
+            raise IndexError(f"Step index {step_index} out of range (have {len(step_files)} steps)")
+        step_data = _read_step_file(step_files[step_index])
+        assert step_data is not None
+        return TrajectoryStep.model_validate(step_data)
 
     def _v1_load_trajectory(self, trajectory_id: str) -> Trajectory:
         traj_dir = self.output_dir / "trajectories"

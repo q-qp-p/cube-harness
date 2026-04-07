@@ -11,7 +11,7 @@ from cube_harness.core import (
     TrajectoryStep,
 )
 from cube_harness.llm import LLMCall, LLMConfig, Message, Prompt
-from cube_harness.storage import FileStorage
+from cube_harness.storage import FileStorage, _deserialize_step
 
 
 class TestFileStorageBasic:
@@ -77,10 +77,9 @@ class TestFileStorageWithSteps:
         steps_dir = Path(tmp_dir) / "episodes" / "000_A_on_task_1" / "steps"
         step_files = sorted(steps_dir.iterdir())
         assert len(step_files) == 1
-        assert step_files[0].name == "000_obs.json"
+        assert step_files[0].name == "000_obs.msgpack.zst"
 
-        with open(step_files[0]) as f:
-            step_data = json.loads(f.read())
+        step_data = _deserialize_step(step_files[0].read_bytes())
         assert "output" in step_data
         assert "obs" in step_data["output"]
 
@@ -93,7 +92,7 @@ class TestFileStorageWithSteps:
         steps_dir = Path(tmp_dir) / "episodes" / "000_A_on_task_1" / "steps"
         step_files = sorted(steps_dir.iterdir())
         assert len(step_files) == 1
-        assert step_files[0].name == "000_act.json"
+        assert step_files[0].name == "000_act.msgpack.zst"
 
     def test_save_trajectory_with_multiple_steps(self, tmp_dir, sample_env_output, sample_agent_output):
         storage = FileStorage(tmp_dir)
@@ -106,7 +105,7 @@ class TestFileStorageWithSteps:
         steps_dir = Path(tmp_dir) / "episodes" / "000_A_on_task_1" / "steps"
         step_files = sorted(steps_dir.iterdir())
         assert len(step_files) == 3
-        assert [f.name for f in step_files] == ["000_obs.json", "001_act.json", "002_obs.json"]
+        assert [f.name for f in step_files] == ["000_obs.msgpack.zst", "001_act.msgpack.zst", "002_obs.msgpack.zst"]
 
     def test_save_step_appends_to_trajectory(self, tmp_dir, sample_env_output, sample_agent_output):
         storage = FileStorage(tmp_dir)
@@ -174,9 +173,8 @@ class TestFileStorageWithLLMCalls:
 
         assert not (Path(tmp_dir) / "llm_calls").exists()
 
-        step_file = Path(tmp_dir) / "episodes" / "000_A_on_task_1" / "steps" / "000_act.json"
-        with open(step_file) as f:
-            step_data = json.loads(f.read())
+        step_file = Path(tmp_dir) / "episodes" / "000_A_on_task_1" / "steps" / "000_act.msgpack.zst"
+        step_data = _deserialize_step(step_file.read_bytes())
         llm_calls = step_data["output"]["llm_calls"]
         assert len(llm_calls) == 1
         assert llm_calls[0]["id"] == "llm_call_1"
@@ -728,6 +726,78 @@ class TestSummaryStats:
         assert summary["n_completed"] == 3
         assert summary["total_prompt_tokens"] == 3000
         assert summary["total_cost"] == pytest.approx(0.15)
+
+
+class TestMsgpackZstFormat:
+
+    def test_step_files_are_binary(self, tmp_dir, sample_env_output):
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1", "agent_name": "A"})
+        traj.steps.append(TrajectoryStep(output=sample_env_output))
+        storage.save_trajectory(traj)
+
+        steps_dir = Path(tmp_dir) / "episodes" / "000_A_on_task_1" / "steps"
+        step_files = list(steps_dir.iterdir())
+        assert len(step_files) == 1
+        assert step_files[0].name.endswith(".msgpack.zst")
+        raw = step_files[0].read_bytes()
+        assert len(raw) > 0
+        assert raw[:4] != b'{"_t'
+
+    def test_compression_reduces_size(self, tmp_dir):
+        storage = FileStorage(tmp_dir)
+        llm_call = LLMCall(
+            id="call_1",
+            llm_config=LLMConfig(model_name="gpt-4"),
+            prompt=Prompt(
+                messages=[{"role": "system", "content": "You are helpful. " * 200}],
+                tools=[{"type": "function", "function": {"name": f"tool_{i}", "parameters": {}}} for i in range(20)],
+            ),
+            output=Message(role="assistant", content="I will help you. " * 100),
+        )
+        agent_output = AgentOutput(
+            actions=[Action(name="click", arguments={"element": "btn"})],
+            llm_calls=[llm_call],
+        )
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1", "agent_name": "A"})
+        traj.steps.append(TrajectoryStep(output=agent_output))
+        storage.save_trajectory(traj)
+
+        step_file = Path(tmp_dir) / "episodes" / "000_A_on_task_1" / "steps" / "000_act.msgpack.zst"
+        compressed_size = step_file.stat().st_size
+        json_size = len(traj.steps[0].model_dump_json(serialize_as_any=True).encode())
+        assert compressed_size < json_size * 0.5
+
+    def test_random_step_access(self, tmp_dir, sample_env_output, sample_agent_output):
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1", "agent_name": "A"})
+        for i in range(5):
+            output = sample_env_output if i % 2 == 0 else sample_agent_output
+            traj.steps.append(TrajectoryStep(output=output, start_time=float(i), end_time=float(i + 1)))
+        storage.save_trajectory(traj)
+
+        storage2 = FileStorage(tmp_dir)
+        step3 = storage2.load_step("task_1_ep0", 3)
+        assert isinstance(step3.output, AgentOutput)
+        assert step3.start_time == 3.0
+
+        step0 = storage2.load_step("task_1_ep0", 0)
+        assert isinstance(step0.output, EnvironmentOutput)
+        assert step0.start_time == 0.0
+
+    def test_random_step_access_out_of_range(self, tmp_dir, sample_env_output):
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1", "agent_name": "A"})
+        traj.steps.append(TrajectoryStep(output=sample_env_output))
+        storage.save_trajectory(traj)
+
+        with pytest.raises(IndexError):
+            storage.load_step("task_1_ep0", 5)
+
+    def test_random_step_access_not_found(self, tmp_dir):
+        storage = FileStorage(tmp_dir)
+        with pytest.raises(FileNotFoundError):
+            storage.load_step("nonexistent", 0)
 
 
 class TestV1BackwardCompat:

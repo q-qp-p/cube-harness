@@ -7,6 +7,7 @@ from cube.core import Action, EnvironmentOutput, Observation
 
 from cube_harness.core import AgentOutput, Trajectory, TrajectoryStep
 from cube_harness.episode import MAX_STEPS, Episode
+from cube_harness.storage import _read_step_file
 from tests.conftest import MockAgent
 
 
@@ -78,9 +79,8 @@ class TestEpisode:
         assert len(step_files) >= 1
 
         for step_file in step_files:
-            with open(step_file) as f:
-                data = json.loads(f.read())
-                assert isinstance(data, dict)
+            data = _read_step_file(step_file)
+            assert isinstance(data, dict)
 
     def test_episode_run_respects_max_steps(self, tmp_dir, mock_agent_config, mock_env_config):
         """Test Episode run respects max_steps limit."""
