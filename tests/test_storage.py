@@ -890,9 +890,9 @@ class TestLazyLoaders:
         ep_dir = storage._current_episode_dirs["task_1_ep0"]
         result = EpisodeResult(ep_dir, storage)
 
-        assert result.metadata.id == "task_1_ep0"
-        assert result.summary_stats["final_reward"] == 1.0
-        assert result.metadata.steps == []
+        assert result.metadata().id == "task_1_ep0"
+        assert result.summary_stats()["final_reward"] == 1.0
+        assert result.metadata().steps == []
 
     def test_episode_result_random_access(self, tmp_dir, sample_env_output, sample_agent_output):
         from cube_harness.results import EpisodeResult
@@ -938,9 +938,9 @@ class TestLazyLoaders:
             storage.save_trajectory(traj)
 
         result = ExperimentResult(tmp_dir)
-        assert len(result.episodes) == 3
-        for traj_id, episode in result.episodes.items():
-            assert episode.metadata.steps == []
+        assert len(result.episodes()) == 3
+        for traj_id, episode in result.episodes().items():
+            assert episode.metadata().steps == []
 
     def test_experiment_result_summary(self, tmp_dir, sample_env_output):
         from cube_harness.results import ExperimentResult
@@ -956,8 +956,8 @@ class TestLazyLoaders:
         storage.update_experiment_summary(traj)
 
         result = ExperimentResult(tmp_dir)
-        assert result.summary is not None
-        assert result.summary["n_episodes"] == 1
+        assert result.summary() is not None
+        assert result.summary()["n_episodes"] == 1
 
     def test_episode_result_load_full(self, tmp_dir, sample_env_output, sample_agent_output):
         from cube_harness.results import EpisodeResult
