@@ -8,7 +8,7 @@ test:
 	uv run pytest tests/
 
 debug:
-	uv run cube test osworld_cube
+	uv run cube test osworld-cube
 
 debug-docker:
 	uv run cube test osworld_cube.debug_docker

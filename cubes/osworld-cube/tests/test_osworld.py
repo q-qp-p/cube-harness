@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import io
-import json
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
@@ -252,6 +250,7 @@ def _make_task_metadata(task_id: str = "t1", instruction: str = "Do something"):
         id=task_id,
         abstract_description=instruction,
         extra_info={
+            "instruction": instruction,
             "domain": "os",
             "snapshot": "init_state",
             "config": [],
@@ -495,41 +494,6 @@ class TestOSWorldTestSet:
 # ---------------------------------------------------------------------------
 
 
-def _make_osworld_repo(tmpdir: Path) -> Path:
-    """Create a minimal fake OSWorld repo with 2 tasks in 2 domains."""
-    eval_dir = tmpdir / "evaluation_examples"
-    (eval_dir / "examples" / "chrome").mkdir(parents=True)
-    (eval_dir / "examples" / "os").mkdir(parents=True)
-
-    test_set = {"chrome": ["chrome-1"], "os": ["os-1"]}
-    (eval_dir / "test_all.json").write_text(json.dumps(test_set))
-
-    (eval_dir / "examples" / "chrome" / "chrome-1.json").write_text(
-        json.dumps(
-            {
-                "id": "chrome-1",
-                "instruction": "Open Chrome",
-                "snapshot": "init_state",
-                "config": [],
-                "evaluator": {"func": "check_url"},
-                "related_apps": ["chrome"],
-            }
-        )
-    )
-    (eval_dir / "examples" / "os" / "os-1.json").write_text(
-        json.dumps(
-            {
-                "id": "os-1",
-                "instruction": "Open terminal",
-                "snapshot": "init_state",
-                "config": [],
-                "evaluator": {"func": "check_process"},
-                "related_apps": [],
-            }
-        )
-    )
-    return eval_dir
-
 
 class TestOSWorldBenchmark:
     def test_benchmark_metadata(self) -> None:
@@ -538,169 +502,54 @@ class TestOSWorldBenchmark:
         assert OSWorldBenchmark.benchmark_metadata.name == "osworld"
         assert OSWorldBenchmark.task_config_class.__name__ == "OSWorldTaskConfig"
 
-    def test_load_all_tasks_from_repo(self) -> None:
-        from osworld_cube.benchmark import OSWorldBenchmark
-        from osworld_cube.computer import ComputerConfig
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            eval_dir = _make_osworld_repo(Path(tmpdir))
-            bench = OSWorldBenchmark(
-                default_tool_config=ComputerConfig(),
-                test_set_path=str(eval_dir),
-                test_set_name="test_all.json",
-            )
-            bench.setup()
-
-            assert len(bench.task_metadata) == 2
-            assert "chrome-1" in bench.task_metadata
-            assert "os-1" in bench.task_metadata
-
     def test_domain_filter_via_subset_from_glob(self) -> None:
         from osworld_cube.benchmark import OSWorldBenchmark
         from osworld_cube.computer import ComputerConfig
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            eval_dir = _make_osworld_repo(Path(tmpdir))
-            bench = OSWorldBenchmark(
-                default_tool_config=ComputerConfig(),
-                test_set_path=str(eval_dir),
-                test_set_name="test_all.json",
-            )
-            bench.setup()
-            chrome_bench = bench.subset_from_glob("extra_info.domain", "chrome")
+        bench = OSWorldBenchmark(default_tool_config=ComputerConfig())
+        bench.setup()
+        chrome_bench = bench.subset_from_glob("extra_info.domain", "chrome")
 
-            assert len(chrome_bench.task_metadata) == 1
-            assert "chrome-1" in chrome_bench.task_metadata
+        assert len(chrome_bench.task_metadata) < len(bench.task_metadata)
+        assert all(
+            tm.extra_info["domain"] == "chrome"
+            for tm in chrome_bench.task_metadata.values()
+        )
 
-    def test_get_task_configs_carries_metadata(self) -> None:
+    def test_get_task_configs_returns_osworld_task_configs(self) -> None:
         from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTaskConfig
         from osworld_cube.computer import ComputerConfig
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            eval_dir = _make_osworld_repo(Path(tmpdir))
-            bench = OSWorldBenchmark(
-                default_tool_config=ComputerConfig(),
-                test_set_path=str(eval_dir),
-            )
-            bench.setup()
+        bench = OSWorldBenchmark(default_tool_config=ComputerConfig())
+        bench.setup()
 
-            configs = list(bench.get_task_configs())
-            assert len(configs) == 2
-            for cfg in configs:
-                assert isinstance(cfg, OSWorldTaskConfig)
-                assert cfg.metadata is not None
-                assert cfg.task_id == cfg.metadata.id
+        cfg = next(bench.get_task_configs())
+        assert isinstance(cfg, OSWorldTaskConfig)
+        assert cfg.task_id in bench.task_metadata
 
     def test_task_config_make_produces_osworld_task(self) -> None:
         from osworld_cube.benchmark import OSWorldBenchmark
         from osworld_cube.computer import ComputerConfig
         from osworld_cube.task import OSWorldTask
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            eval_dir = _make_osworld_repo(Path(tmpdir))
-            bench = OSWorldBenchmark(
-                default_tool_config=ComputerConfig(),
-                test_set_path=str(eval_dir),
-            )
-            bench.setup()
+        bench = OSWorldBenchmark(default_tool_config=ComputerConfig())
+        bench.setup()
 
-            cfg = next(bench.get_task_configs())
-            task = cfg.make()
+        cfg = next(bench.get_task_configs())
+        task = cfg.make()
 
-            assert isinstance(task, OSWorldTask)
-            assert task.metadata.id == cfg.task_id
+        assert isinstance(task, OSWorldTask)
+        assert task.metadata.id == cfg.task_id
 
-    def test_load_from_flat_json_file(self) -> None:
+    def test_use_som_propagates_to_task_configs(self) -> None:
         from osworld_cube.benchmark import OSWorldBenchmark
         from osworld_cube.computer import ComputerConfig
 
-        tasks_data = [
-            {
-                "id": "flat-1",
-                "instruction": "Flat task 1",
-                "domain": "os",
-                "snapshot": "init_state",
-                "config": [],
-                "evaluator": {},
-                "related_apps": [],
-            },
-            {
-                "id": "flat-2",
-                "instruction": "Flat task 2",
-                "domain": "chrome",
-                "snapshot": "init_state",
-                "config": [],
-                "evaluator": {},
-                "related_apps": [],
-            },
-        ]
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(tasks_data, f)
-            tasks_file = f.name
-
-        bench = OSWorldBenchmark(
-            default_tool_config=ComputerConfig(),
-            tasks_file=tasks_file,
-        )
+        bench = OSWorldBenchmark(default_tool_config=ComputerConfig(), use_som=True)
         bench.setup()
 
-        assert len(bench.task_metadata) == 2
-        assert bench.task_metadata["flat-1"].abstract_description == "Flat task 1"
-        assert bench.task_metadata["flat-2"].extra_info["domain"] == "chrome"
-
-    def test_fix_settings_paths(self) -> None:
-        from osworld_cube.benchmark import OSWORLD_REPO_DIR, OSWorldBenchmark
-        from osworld_cube.computer import ComputerConfig
-
-        bench = OSWorldBenchmark(default_tool_config=ComputerConfig())
-        task_data = {
-            "id": "t",
-            "config": [{"type": "setup", "parameters": {"settings_file": "configs/x.json"}}],
-        }
-        fixed = bench._fix_settings_paths(task_data)
-
-        assert fixed["config"][0]["parameters"]["settings_file"] == str(OSWORLD_REPO_DIR / "configs/x.json")
-
-    def test_test_set_name_accepts_enum(self) -> None:
-        from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTestSet
-        from osworld_cube.computer import ComputerConfig
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            eval_dir = _make_osworld_repo(Path(tmpdir))
-            bench = OSWorldBenchmark(
-                default_tool_config=ComputerConfig(),
-                test_set_path=str(eval_dir),
-                test_set_name=OSWorldTestSet.TEST_ALL,
-            )
-            bench.setup()
-            assert len(bench.task_metadata) == 2
-
-    def test_test_set_name_selects_subset(self) -> None:
-        """Different enum values load different task subsets from the repo."""
-        from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTestSet
-        from osworld_cube.computer import ComputerConfig
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            eval_dir = _make_osworld_repo(Path(tmpdir))
-            (eval_dir / "test_small.json").write_text(json.dumps({"chrome": ["chrome-1"]}))
-
-            bench_all = OSWorldBenchmark(
-                default_tool_config=ComputerConfig(),
-                test_set_path=str(eval_dir),
-                test_set_name=OSWorldTestSet.TEST_ALL,
-            )
-            bench_small = OSWorldBenchmark(
-                default_tool_config=ComputerConfig(),
-                test_set_path=str(eval_dir),
-                test_set_name=OSWorldTestSet.TEST_SMALL,
-            )
-            bench_all.setup()
-            bench_small.setup()
-
-            assert len(bench_all.task_metadata) == 2
-            assert len(bench_small.task_metadata) == 1
-            assert "chrome-1" in bench_small.task_metadata
-            assert "os-1" not in bench_small.task_metadata
+        cfg = next(bench.get_task_configs())
+        assert cfg.use_som is True
 
     def test_close_does_not_raise(self) -> None:
         from osworld_cube.benchmark import OSWorldBenchmark

@@ -20,16 +20,67 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import ClassVar
 
+from cube.benchmark import Benchmark
+from cube.container import ContainerBackend
 from cube.core import Action, ActionSchema, Observation
+from cube.task import TaskConfig, TaskMetadata
 from cube.vm import VMBackend
-from osworld_cube.benchmark import OSWorldBenchmark
+from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTaskConfig
 from osworld_cube.computer import ComputerConfig
+from osworld_cube.task import OSWorldTask
 from osworld_cube.vm_backend import OSWorldQEMUVMBackend
 
 logger = logging.getLogger(__name__)
 
-_TASKS_FILE = Path(__file__).parent / "debug_tasks.json"
+_DEBUG_TASK_METADATA_JSON = Path(__file__).parent / "debug_task_metadata.json"
+
+
+class DebugOSWorldTaskConfig(OSWorldTaskConfig):
+    def make(
+        self,
+        runtime_context: dict | None = None,
+        container_backend: ContainerBackend | None = None,
+    ) -> OSWorldTask:
+        """Instantiate OSWorldTask from the debug benchmark's task_metadata."""
+        metadata = DebugOSWorldBenchmark.task_metadata[self.task_id]
+        if self.tool_config is None:
+            raise ValueError(
+                f"DebugOSWorldTaskConfig for task '{self.task_id}' has no tool_config."
+            )
+        return OSWorldTask(
+            metadata=metadata,
+            tool_config=self.tool_config,
+            vm_backend=self.vm_backend,
+            runtime_context=runtime_context,
+            container_backend=container_backend,
+            use_som=self.use_som,
+        )
+
+
+class DebugOSWorldBenchmark(OSWorldBenchmark):
+    """OSWorldBenchmark scoped to the two hardcoded debug tasks.
+
+    Loads task_metadata from debug_task_metadata.json so no install()
+    or OSWorld repo clone is needed to run the debug suite.
+    """
+
+    benchmark_metadata = OSWorldBenchmark.benchmark_metadata.model_copy(update={"num_tasks": 2, "named_subsets": {}})
+    task_metadata: ClassVar[dict[str, TaskMetadata]] = Benchmark.task_metadata_from_json(
+        _DEBUG_TASK_METADATA_JSON
+    )
+    task_config_class: ClassVar[type[TaskConfig]] = DebugOSWorldTaskConfig
+
+    @classmethod
+    def install(cls) -> None:
+        """No-op: debug benchmark uses pre-defined tasks, no repo clone needed."""
+        logger.info("DebugOSWorldBenchmark.install() — nothing to do")
+
+    @classmethod
+    def uninstall(cls) -> None:
+        """No-op: debug benchmark has no external resources to remove."""
+        logger.info("DebugOSWorldBenchmark.uninstall() — nothing to do")
 
 # ---------------------------------------------------------------------------
 # Hardcoded action sequences per task ID
@@ -125,16 +176,11 @@ class DebugAgent:
 def get_debug_benchmark(vm_backend: VMBackend | None = None) -> OSWorldBenchmark:
     """Return an OSWorldBenchmark scoped to the debug tasks.
 
-    Uses debug_tasks.json as the task source — no OSWorld repo clone required.
-    The caller (cube.testing) is responsible for calling install() and setup().
-
     Args:
         vm_backend: Backend to use. Defaults to OSWorldQEMUVMBackend (Linux/KVM).
                     Pass OSWorldDockerVMBackend() to run on macOS via Docker.
     """
-    return OSWorldBenchmark(
-        tasks_file=str(_TASKS_FILE),
-        default_tool_config=ComputerConfig(),
+    return DebugOSWorldBenchmark(
         vm_backend=vm_backend or OSWorldQEMUVMBackend(),
     )
 

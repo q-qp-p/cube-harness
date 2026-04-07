@@ -20,14 +20,13 @@ import enum
 import json
 import logging
 import os
+import shutil
 import subprocess
 from collections.abc import Generator
 from copy import deepcopy
 from dotenv import load_dotenv
 from pathlib import Path
 from typing import ClassVar
-
-from pydantic import model_validator
 
 from cube.benchmark import Benchmark, BenchmarkMetadata
 from cube.container import ContainerBackend
@@ -44,13 +43,15 @@ logger = logging.getLogger(__name__)
 # Paths — rooted under CUBE_CACHE_DIR (default ~/.cube)
 # ---------------------------------------------------------------------------
 
-OSWORLD_BASE_DIR = _CUBE_CACHE_ROOT
+OSWORLD_BASE_DIR = _CUBE_CACHE_ROOT  # same as cube.get_cache_dir("osworld-cube")
 OSWORLD_REPO_DIR = OSWORLD_BASE_DIR / "OSWorld"
 OSWORLD_VM_DIR = OSWORLD_BASE_DIR / "vm_data"
 OSWORLD_CACHE_DIR = OSWORLD_BASE_DIR / "cache"
 
 # Pinned OSWorld commit for reproducibility
 OSWORLD_COMMIT = "e695a10"
+
+_TASK_METADATA_JSON = Path(__file__).parent / "task_metadata.json"
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +114,7 @@ class OSWorldTaskConfig(TaskConfig):
     """
 
     vm_backend: VMBackend | None = None
+    use_som: bool = False
 
     def make(
         self,
@@ -133,6 +135,7 @@ class OSWorldTaskConfig(TaskConfig):
             vm_backend=self.vm_backend,
             runtime_context=runtime_context,
             container_backend=container_backend,
+            use_som=self.use_som,
         )
 
 
@@ -154,9 +157,8 @@ class OSWorldBenchmark(Benchmark):
 
     Constructor params (set by benchmark users):
         default_tool_config:  ComputerConfig  — how to connect to the VM (action_space selects variant)
-        tasks_file:           str | None      — flat JSON task file; mutually exclusive with test_set_name
-        test_set_name:        OSWorldTestSet  — which test-set index file to load (default: TEST_ALL)
         use_som:              bool            — Set-of-Marks mode for all tasks
+        vm_backend:           VMBackend | None — backend to provision VMs; None = attach externally
 
     To filter by domain or any other metadata field, call subset_from_glob() after setup():
         bench.setup()
@@ -180,26 +182,21 @@ class OSWorldBenchmark(Benchmark):
         },
         num_tasks=369,
         tags=["desktop", "gui", "multimodal"],
+        named_subsets={
+            "test_all":        ("extra_info.test_sets", "*'test_all'*"),
+            "test_small":      ("extra_info.test_sets", "*'test_small'*"),
+            "test_nogdrive":   ("extra_info.test_sets", "*'test_nogdrive'*"),
+            "test_infeasible": ("extra_info.test_sets", "*'test_infeasible'*"),
+        },
     )
-
-    # Placeholder: populated per-instance in _setup() via object.__setattr__
     task_metadata: ClassVar[dict[str, TaskMetadata]] = {}
-
+    # task_metadata: populated automatically at import time in Benchmark.__init_subclass__
     task_config_class: ClassVar[type[TaskConfig]] = OSWorldTaskConfig
 
     # ------------------------------------------------------------------
     # Instance fields
     # ------------------------------------------------------------------
     default_tool_config: ComputerConfig = ComputerConfig()
-
-    tasks_file: str | None = None
-    """Path to a flat JSON array of task dicts (overrides OSWorld repo structure)."""
-
-    test_set_name: OSWorldTestSet = OSWorldTestSet.TEST_ALL
-    """Filename of the test set index inside <evaluation_examples>/."""
-
-    test_set_path: str | None = None
-    """Override the evaluation_examples directory (used for testing with a custom repo path)."""
 
     use_som: bool = False
     """Enable Set-of-Marks annotation for all tasks in this benchmark run."""
@@ -208,24 +205,21 @@ class OSWorldBenchmark(Benchmark):
     """VM backend used to provision VMs for each task. If None, tasks will fail
     unless a VM is attached externally via computer.attach_vm()."""
 
-    @model_validator(mode="after")
-    def _warn_on_conflicting_task_source(self) -> "OSWorldBenchmark":
-        if self.tasks_file is not None and "test_set_name" in self.model_fields_set:
-            logger.warning("Both 'tasks_file' and 'test_set_name' were specified — 'tasks_file' takes precedence.")
-        return self
-
     # ------------------------------------------------------------------
     # get_task_configs() override — inject vm_backend into each config
     # ------------------------------------------------------------------
 
     def get_task_configs(self) -> Generator[TaskConfig, None, None]:
-        """Yield OSWorldTaskConfig objects, injecting vm_backend from the benchmark."""
+        """Yield task config objects, injecting vm_backend and use_som from the benchmark."""
+        tc_cls = self.task_config_class
+        assert issubclass(tc_cls, OSWorldTaskConfig)
         for tm in self.task_metadata.values():
-            yield OSWorldTaskConfig(
+            yield tc_cls(
                 task_id=tm.id,
                 tool_config=self.default_tool_config,
                 seed=None,
                 vm_backend=self.vm_backend,
+                use_som=self.use_som,
             )
 
     # ------------------------------------------------------------------
@@ -233,29 +227,30 @@ class OSWorldBenchmark(Benchmark):
     # ------------------------------------------------------------------
 
     def _setup(self) -> None:
-        """
-        Prepare benchmark for task spawning.
+        """Rresolve machine-specific paths in task_metadata.
 
-        Steps:
-          1. Check desktop_env is installed
-          2. Ensure OSWorld repo is cloned (or validate tasks_file)
-          3. Load task metadata from JSON files → populate instance shadow of task_metadata
+        task_metadata.json is bundled with the package and must remain portable
+        (machine-agnostic), so settings_file paths inside config items are stored
+        as relative paths (relative to the OSWorld repo root).  OSWORLD_REPO_DIR,
+        however, is machine-specific (derived from _CUBE_CACHE_ROOT / an env var).
+        _fix_config_paths() therefore runs here at setup() time — not in install() —
+        so that absolute paths are resolved against the correct local OSWORLD_REPO_DIR
+        on whatever machine is running the benchmark.
         """
-        self.install()
-
-        logger.info(f"Setting up OSWorldBenchmark (provider={self._get_provider()})")
+        provider = type(self.vm_backend).__name__ if self.vm_backend else "none"
+        logger.info(f"Setting up OSWorldBenchmark (provider={provider})...")
 
         # Only skip loading if this instance already has its own shadow (i.e. was
         # already set up).  We deliberately do NOT guard on the class-level attr
         # because that would prevent a fresh instance from loading its own task
         # set when a previous setup already populated the ClassVar with a different set.
         if "task_metadata" not in self.__dict__:
-            if self.tasks_file:
-                if not Path(self.tasks_file).exists():
-                    raise FileNotFoundError(f"tasks_file not found: {self.tasks_file}")
-                loaded = self._load_task_metadata_from_file(self.tasks_file)
-            else:
-                loaded = self._load_task_metadata_from_repo()
+            # Fix absolute settings_file paths in config items (repo-relative → absolute)
+            loaded = {}
+            for tid, tm in type(self).task_metadata.items():
+                fixed_config = self._fix_config_paths(tm.extra_info.get("config", []))
+                extra = {**tm.extra_info, "config": fixed_config}
+                loaded[tid] = tm.model_copy(update={"extra_info": extra})
 
             # Populate instance-level shadow for test isolation (each Benchmark
             # instance sees its own view, e.g. after subset_from_glob).
@@ -280,103 +275,18 @@ class OSWorldBenchmark(Benchmark):
         """
         logger.info("Closing OSWorldBenchmark — no global resources to release")
 
-    # ------------------------------------------------------------------
-    # Task metadata loading helpers
-    # ------------------------------------------------------------------
-
-    def _load_task_metadata_from_file(self, tasks_file: str) -> dict[str, TaskMetadata]:
-        """
-        Load TaskMetadata from a flat JSON array.
-
-        Expected format: [{"id": "...", "instruction": "...", "domain": "...", ...}, ...]
-        Uses "instruction" as the task goal (abstract_description).
-        """
-        with open(tasks_file) as f:
-            task_list = json.load(f)
-
-        result = {}
-        for td in task_list:
-            task_id = td["id"]
-            metadata = TaskMetadata(
-                id=task_id,
-                abstract_description=td.get("instruction", td.get("desc", "")),
-                extra_info={
-                    "domain": td.get("domain", "general"),
-                    "snapshot": td.get("snapshot", "init_state"),
-                    "config": td.get("config", []),
-                    "evaluator": td.get("evaluator", {}),
-                    "related_apps": td.get("related_apps", []),
-                },
-            )
-            result[task_id] = metadata
-
-        logger.info(f"Loaded {len(result)} task metadata entries from {tasks_file}")
-        return result
-
-    def _load_task_metadata_from_repo(self) -> dict[str, TaskMetadata]:
-        """
-        Load TaskMetadata from the OSWorld repo directory structure.
-
-        Reads <eval_examples_dir>/test_set_name → {domain: [task_id, ...]}
-        Then reads <eval_examples_dir>/examples/<domain>/<task_id>.json per task.
-        """
-        eval_examples_dir = (
-            Path(self.test_set_path) if self.test_set_path else (OSWORLD_REPO_DIR / "evaluation_examples")
-        )
-        test_set_file = eval_examples_dir / self.test_set_name
-
-        if not test_set_file.exists():
-            raise FileNotFoundError(
-                f"Test set not found: {test_set_file}\nEnsure OSWorld is cloned and task files are present."
-            )
-
-        with open(test_set_file) as f:
-            tasks_by_domain: dict[str, list[str]] = json.load(f)
-
-        result = {}
-        for domain_name, task_ids in tasks_by_domain.items():
-            for task_id in task_ids:
-                task_file = eval_examples_dir / "examples" / domain_name / f"{task_id}.json"
-                if not task_file.exists():
-                    logger.warning(f"Task file not found: {task_file}")
-                    continue
-                try:
-                    with open(task_file) as f:
-                        td = json.load(f)
-                    td = self._fix_settings_paths(td)
-
-                    metadata = TaskMetadata(
-                        id=td.get("id", task_id),
-                        abstract_description=td.get("instruction", ""),
-                        extra_info={
-                            "domain": domain_name,
-                            "snapshot": td.get("snapshot", "init_state"),
-                            "config": td.get("config", []),
-                            "evaluator": td.get("evaluator", {}),
-                            "related_apps": td.get("related_apps", []),
-                        },
-                    )
-                    result[metadata.id] = metadata
-                except Exception as e:
-                    logger.error(f"Failed to load task {task_id}: {e}")
-
-        logger.info(f"Loaded {len(result)} task metadata entries from OSWorld repo")
-        return result
-
-    def _fix_settings_paths(self, task: dict) -> dict:
-        """
-        Prepend OSWorld repo path to settings_file paths in task config items.
-
-        Keeps relative paths in the task JSON working regardless of CWD.
-        """
-        updated = deepcopy(task)
-        for config_item in updated.get("config", []):
-            params = config_item.get("parameters", {})
+    @staticmethod
+    def _fix_config_paths(config: list) -> list:
+        """Rewrite relative settings_file paths in config items to absolute paths."""
+        result = deepcopy(config)
+        for item in result:
+            params = item.get("parameters", {})
             if "settings_file" in params:
                 params["settings_file"] = str(OSWORLD_REPO_DIR / params["settings_file"])
-        return updated
+        return result
 
-    def _clone_osworld_repo(self) -> None:
+    @staticmethod
+    def _clone_osworld_repo() -> None:
         """Clone and pin the OSWorld repository to OSWORLD_COMMIT."""
         OSWORLD_BASE_DIR.mkdir(parents=True, exist_ok=True)
         subprocess.run(
@@ -390,31 +300,95 @@ class OSWorldBenchmark(Benchmark):
         )
         OSWORLD_VM_DIR.mkdir(parents=True, exist_ok=True)
 
-    def _get_provider(self) -> str:
-        """Return provider name derived from vm_backend type."""
-        if self.vm_backend is None:
-            return "none"
-        return type(self.vm_backend).__name__
 
     # ------------------------------------------------------------------
-    # install() — available for manual invocation; called from _setup()
+    # install() / uninstall()
     # ------------------------------------------------------------------
 
-    def install(self) -> None:
-        """
-        Clone OSWorld repo and set up directory structure.
+    @classmethod
+    def install(cls) -> None:
+        """Clone OSWorld repo and save task_metadata.json (tasks from all test sets).
 
-        Also sets PROXY_CONFIG_FILE env var to the correct path inside
-        the cloned repo so desktop_env finds it at import time.
+        The repo is always cloned if missing — it is needed at task execution time
+        for settings_file paths in task config items. task_metadata.json is only
+        generated if it does not already exist.
         """
         logger.info("Installing OSWorld benchmark...")
+        # Repo is needed at task execution time; always ensure it is present.
         if not OSWORLD_REPO_DIR.exists():
-            self._clone_osworld_repo()
+            OSWorldBenchmark._clone_osworld_repo()
             logger.info(f"OSWorld repo cloned to {OSWORLD_REPO_DIR}")
         else:
             logger.info(f"OSWorld repo already present at {OSWORLD_REPO_DIR}")
         ensure_proxy_config_in_env()
         load_dotenv()  # Load the .env file
         logger.info(f"Set PROXY_CONFIG_FILE={os.environ.get('PROXY_CONFIG_FILE', 'not set')}")
-
         logger.info("VM images will be downloaded automatically on first task reset.")
+
+        if _TASK_METADATA_JSON.exists():
+            logger.info("task_metadata.json already exists, skipping metadata generation")
+            return
+
+        eval_examples_dir = OSWORLD_REPO_DIR / "evaluation_examples"
+
+        # Collect which test sets each task_id belongs to
+        task_sets: dict[str, list[str]] = {}
+        task_raw: dict[str, dict] = {}
+
+        for test_set in OSWorldTestSet:
+            test_set_file = eval_examples_dir / test_set.value
+            if not test_set_file.exists():
+                logger.warning(f"Test set file not found: {test_set_file}")
+                continue
+            with open(test_set_file) as f:
+                tasks_by_domain: dict[str, list[str]] = json.load(f)
+
+            set_name = test_set.value.replace(".json", "")
+            for domain_name, task_ids in tasks_by_domain.items():
+                for task_id in task_ids:
+                    task_sets.setdefault(task_id, []).append(set_name)
+                    if task_id not in task_raw:
+                        task_file = eval_examples_dir / "examples" / domain_name / f"{task_id}.json"
+                        if not task_file.exists():
+                            logger.warning(f"Task file not found: {task_file}")
+                            continue
+                        try:
+                            with open(task_file) as f:
+                                td = json.load(f)
+                            task_raw[task_id] = {"domain": domain_name, "data": td}
+                        except Exception as e:
+                            logger.error(f"Failed to load task {task_id}: {e}")
+
+        metadata: dict[str, TaskMetadata] = {}
+        for task_id, info in task_raw.items():
+            td = info["data"]
+            domain_name = info["domain"]
+            tm = TaskMetadata(
+                id=td.get("id", task_id),
+                abstract_description=td.get("desc", td.get("instruction", "")),
+                extra_info={
+                    "instruction": td.get("instruction", ""),
+                    "domain": domain_name,
+                    "test_sets": task_sets.get(task_id, []),
+                    "snapshot": td.get("snapshot", "init_state"),
+                    "config": td.get("config", []),
+                    "evaluator": td.get("evaluator", {}),
+                    "related_apps": td.get("related_apps", []),
+                },
+            )
+            metadata[tm.id] = tm
+
+        _TASK_METADATA_JSON.write_text(json.dumps([tm.model_dump() for tm in metadata.values()], indent=2))
+        cls.task_metadata = metadata
+        logger.info(f"Saved {len(metadata)} tasks to {_TASK_METADATA_JSON}")
+
+    @classmethod
+    def uninstall(cls) -> None:
+        """Remove task_metadata.json and the cloned OSWorld repo."""
+        if _TASK_METADATA_JSON.exists():
+            _TASK_METADATA_JSON.unlink()
+            cls.task_metadata = {}
+            logger.info(f"Removed {_TASK_METADATA_JSON}")
+        if OSWORLD_REPO_DIR.exists():
+            shutil.rmtree(OSWORLD_REPO_DIR)
+            logger.info(f"Removed OSWorld repo at {OSWORLD_REPO_DIR}")

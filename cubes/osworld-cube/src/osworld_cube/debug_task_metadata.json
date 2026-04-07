@@ -1,0 +1,70 @@
+[
+  {
+    "id": "simple-create-file",
+    "split": "test",
+    "abstract_description": "Create a file on the Desktop.",
+    "recommended_max_steps": null,
+    "container_config": null,
+    "extra_info": {
+      "instruction": "Create a file called 'hello.txt' on the Desktop with the content 'Hello World'.",
+      "domain": "os",
+      "test_sets": ["debug"],
+      "snapshot": "init_state",
+      "config": [],
+      "evaluator": {
+        "func": "check_include_exclude",
+        "result": {
+          "type": "vm_command_line",
+          "command": "cat ~/Desktop/hello.txt"
+        },
+        "expected": {
+          "type": "rule",
+          "rules": {
+            "include": [
+              "Hello World"
+            ],
+            "exclude": []
+          }
+        }
+      },
+      "related_apps": [
+        "os"
+      ]
+    },
+    "_type": "cube.task.TaskMetadata"
+  },
+  {
+    "id": "simple-make-directory",
+    "split": "test",
+    "abstract_description": "Create a folder on the Desktop.",
+    "recommended_max_steps": null,
+    "container_config": null,
+    "extra_info": {
+      "instruction": "Create a folder called 'my_folder' on the Desktop.",
+      "domain": "os",
+      "test_sets": ["debug"],
+      "snapshot": "init_state",
+      "config": [],
+      "evaluator": {
+        "func": "check_include_exclude",
+        "result": {
+          "type": "vm_command_line",
+          "command": "ls ~/Desktop/"
+        },
+        "expected": {
+          "type": "rule",
+          "rules": {
+            "include": [
+              "my_folder"
+            ],
+            "exclude": []
+          }
+        }
+      },
+      "related_apps": [
+        "os"
+      ]
+    },
+    "_type": "cube.task.TaskMetadata"
+  }
+]

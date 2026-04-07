@@ -66,7 +66,8 @@ class OSWorldTask(Task):
         related_apps  (list)  — applications involved in the task
 
     Task instruction:
-        metadata.abstract_description  — used as the agent's goal text
+        metadata.extra_info["instruction"]  — used as the agent's goal text
+        metadata.abstract_description       — short description of the task type (may be empty)
     """
 
     vm_backend: VMBackend | None = None
@@ -194,11 +195,12 @@ class OSWorldTask(Task):
           6. Return (obs, info)
         """
         self._ensure_vm()
+        self.tool.reset()
         extra = self.metadata.extra_info
 
         task_data = {
             "id": self.metadata.id,
-            "instruction": self.metadata.abstract_description,
+            "instruction": extra.get("instruction", ""),
             "config": extra.get("config", []),
             "evaluator": extra.get("evaluator", {}),
             "snapshot": extra.get("snapshot", "init_state"),
@@ -210,7 +212,7 @@ class OSWorldTask(Task):
         obs = self._setup_task(task_data)
         obs = self.obs_postprocess(obs)
 
-        goal_obs = Observation.from_text(f"Task: {self.metadata.abstract_description}")
+        goal_obs = Observation.from_text(f"Task: {extra.get('instruction', '')}")
         obs = goal_obs + obs
 
         info = {
