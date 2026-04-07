@@ -64,6 +64,7 @@ class TestFileStorageBasic:
             "start_time": 0.0,
             "end_time": 1.0,
             "reward_info": {},
+            "summary_stats": None,
         }
 
     def test_save_trajectory_creates_jsonl_file(self, tmp_dir):
@@ -805,3 +806,103 @@ class TestLoadTrajectoryMetadata:
         assert len(full.steps) == 1
         assert isinstance(full.steps[0].output, EnvironmentOutput)
         assert full.steps[0].output.reward == 1.0
+
+
+class TestSummaryStats:
+    """Tests for per-trajectory summary_stats and experiment_summary.json."""
+
+    def _make_trajectory_with_stats(self, traj_id: str = "t1") -> Trajectory:
+        obs = Observation.from_text("obs")
+        traj = Trajectory(
+            id=traj_id,
+            metadata={"task_id": "task_1", "agent_name": "agent_a"},
+            start_time=0.0,
+            end_time=10.0,
+            reward_info={"reward": 1.0, "done": True},
+            summary_stats={
+                "n_env_steps": 5,
+                "n_agent_steps": 4,
+                "total_actions": 8,
+                "total_llm_calls": 4,
+                "duration": 10.0,
+                "prompt_tokens": 1000,
+                "completion_tokens": 200,
+                "cached_tokens": 50,
+                "cache_creation_tokens": 0,
+                "cost": 0.05,
+                "final_reward": 1.0,
+            },
+        )
+        traj.steps.append(TrajectoryStep(output=EnvironmentOutput(obs=obs, reward=1.0, done=True)))
+        return traj
+
+    def test_summary_stats_persisted_in_metadata(self, tmp_dir: Path) -> None:
+        storage = FileStorage(tmp_dir)
+        traj = self._make_trajectory_with_stats()
+        storage.save_trajectory(traj)
+
+        metadata_path = tmp_dir / "trajectories" / "t1.metadata.json"
+        with open(metadata_path) as f:
+            data = json.load(f)
+
+        assert data["summary_stats"] is not None
+        assert data["summary_stats"]["n_env_steps"] == 5
+        assert data["summary_stats"]["cost"] == 0.05
+        assert data["summary_stats"]["final_reward"] == 1.0
+
+    def test_summary_stats_loaded_in_metadata_stub(self, tmp_dir: Path) -> None:
+        storage = FileStorage(tmp_dir)
+        traj = self._make_trajectory_with_stats()
+        storage.save_trajectory(traj)
+
+        stub = storage.load_trajectory_metadata("t1")
+        assert stub.steps == []
+        assert stub.summary_stats is not None
+        assert stub.summary_stats["prompt_tokens"] == 1000
+        assert stub.summary_stats["duration"] == 10.0
+
+    def test_backward_compat_no_summary_stats(self, tmp_dir: Path) -> None:
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="old_traj", metadata={"task_id": "t1"})
+        storage.save_trajectory(traj)
+
+        # Manually strip summary_stats from metadata to simulate old data
+        metadata_path = tmp_dir / "trajectories" / "old_traj.metadata.json"
+        with open(metadata_path) as f:
+            data = json.load(f)
+        del data["summary_stats"]
+        with open(metadata_path, "w") as f:
+            json.dump(data, f)
+
+        loaded = storage.load_trajectory_metadata("old_traj")
+        assert loaded.summary_stats is None
+
+    def test_experiment_summary_created(self, tmp_dir: Path) -> None:
+        storage = FileStorage(tmp_dir)
+        traj = self._make_trajectory_with_stats()
+        storage.save_trajectory(traj)
+        storage.update_experiment_summary(traj)
+
+        summary_path = tmp_dir / "experiment_summary.json"
+        assert summary_path.exists()
+        with open(summary_path) as f:
+            summary = json.load(f)
+        assert summary["n_episodes"] == 1
+        assert summary["n_completed"] == 1
+        assert summary["n_errored"] == 0
+        assert summary["total_prompt_tokens"] == 1000
+        assert summary["total_cost"] == 0.05
+
+    def test_experiment_summary_accumulates(self, tmp_dir: Path) -> None:
+        storage = FileStorage(tmp_dir)
+        for i in range(3):
+            traj = self._make_trajectory_with_stats(traj_id=f"t{i}")
+            storage.save_trajectory(traj)
+            storage.update_experiment_summary(traj)
+
+        with open(tmp_dir / "experiment_summary.json") as f:
+            summary = json.load(f)
+        assert summary["n_episodes"] == 3
+        assert summary["n_completed"] == 3
+        assert summary["total_prompt_tokens"] == 3000
+        assert summary["total_cost"] == pytest.approx(0.15)

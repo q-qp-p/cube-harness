@@ -262,7 +262,9 @@ class Episode:
                         turns += 1
                 trajectory.end_time = time.time()
                 trajectory.reward_info = {"reward": env_output.reward, "done": env_output.done, **env_output.info}
+                trajectory.summary_stats = _compute_summary_stats(trajectory)
                 self.storage.save_trajectory(trajectory)
+                self.storage.update_experiment_summary(trajectory)
                 logger.info(colored(f"Episode completed in {turns} turns, reward: {env_output.reward}", "blue"))
                 final_reward = trajectory.last_env_step().reward
                 status = StatusCode.OK if final_reward > 0 else StatusCode.ERROR
@@ -285,3 +287,57 @@ class Episode:
                 for block in llm_call.output.thinking_blocks:
                     logger.info(colored(f"Turn {turns} LLM Thinking Block: {block}", "cyan"))
         logger.info(colored(f"Turn {turns} Agent output: {agent_output}", "magenta"))
+
+
+def _compute_summary_stats(traj: Trajectory) -> dict:
+    n_env_steps = 0
+    n_agent_steps = 0
+    total_actions = 0
+    total_llm_calls = 0
+    prompt_tokens = 0
+    completion_tokens = 0
+    cached_tokens = 0
+    cache_creation_tokens = 0
+    cost = 0.0
+
+    for step in traj.steps:
+        if isinstance(step.output, EnvironmentOutput):
+            n_env_steps += 1
+        elif isinstance(step.output, AgentOutput):
+            n_agent_steps += 1
+            total_actions += len(step.output.actions)
+            total_llm_calls += len(step.output.llm_calls)
+            for llm_call in step.output.llm_calls:
+                if llm_call.usage:
+                    prompt_tokens += llm_call.usage.prompt_tokens
+                    completion_tokens += llm_call.usage.completion_tokens
+                    cached_tokens += llm_call.usage.cached_tokens
+                    cache_creation_tokens += llm_call.usage.cache_creation_tokens
+                    cost += llm_call.usage.cost
+
+    duration = None
+    if traj.start_time is not None and traj.end_time is not None:
+        duration = traj.end_time - traj.start_time
+
+    final_reward = 0.0
+    if traj.reward_info:
+        final_reward = traj.reward_info.get("reward", 0.0)
+    else:
+        for step in reversed(traj.steps):
+            if isinstance(step.output, EnvironmentOutput):
+                final_reward = step.output.reward
+                break
+
+    return {
+        "n_env_steps": n_env_steps,
+        "n_agent_steps": n_agent_steps,
+        "total_actions": total_actions,
+        "total_llm_calls": total_llm_calls,
+        "duration": duration,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cached_tokens": cached_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        "cost": cost,
+        "final_reward": final_reward,
+    }

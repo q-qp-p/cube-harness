@@ -36,6 +36,10 @@ class Storage(Protocol):
         """Save episode configuration to disk for later resumption."""
         ...
 
+    def update_experiment_summary(self, trajectory: Trajectory) -> None:
+        """Update experiment-level summary after an episode completes."""
+        ...
+
 
 class FileStorage:
     """File-based storage for trajectories."""
@@ -313,6 +317,52 @@ class FileStorage:
                 logger.error(f"Failed to load trajectory {trajectory_id}: {e}")
 
         return trajectories
+
+    def update_experiment_summary(self, trajectory: Trajectory) -> None:
+        """Incrementally update experiment_summary.json after an episode completes."""
+        summary_path = self.output_dir / "experiment_summary.json"
+        if summary_path.exists():
+            with open(summary_path) as f:
+                summary = json.load(f)
+        else:
+            summary = {
+                "n_episodes": 0,
+                "n_completed": 0,
+                "n_errored": 0,
+                "total_reward": 0.0,
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "total_cost": 0.0,
+                "updated_at": None,
+            }
+
+        stats = trajectory.summary_stats or {}
+        has_error = any(
+            hasattr(step.output, "error") and step.output.error is not None
+            for step in trajectory.steps
+            if isinstance(step.output, AgentOutput)
+        )
+        reward = stats.get("final_reward", 0.0)
+
+        summary["n_episodes"] += 1
+        if has_error:
+            summary["n_errored"] += 1
+        else:
+            summary["n_completed"] += 1
+        summary["total_reward"] += reward
+        summary["total_prompt_tokens"] += stats.get("prompt_tokens", 0)
+        summary["total_completion_tokens"] += stats.get("completion_tokens", 0)
+        summary["total_cost"] += stats.get("cost", 0.0)
+
+        n_completed = summary["n_completed"]
+        if n_completed > 0:
+            summary["success_rate"] = round(summary["total_reward"] / n_completed, 4)
+        summary["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        tmp_path = summary_path.with_suffix(".tmp")
+        with open(tmp_path, "w") as f:
+            json.dump(summary, f, indent=2)
+        tmp_path.rename(summary_path)
 
     def save_episode_config(self, episode_config: "EpisodeConfig") -> None:
         """Save episode configuration to disk for later resumption.

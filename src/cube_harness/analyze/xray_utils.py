@@ -766,6 +766,8 @@ def compute_trajectory_stats(traj: Trajectory) -> dict[str, Any]:
     duration, prompt_tokens, completion_tokens, cached_tokens, cache_creation_tokens,
     cost, final_reward.
     """
+    if traj.summary_stats:
+        return traj.summary_stats
     n_env_steps = 0
     n_agent_steps = 0
     total_actions = 0
