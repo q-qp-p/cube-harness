@@ -728,6 +728,79 @@ class TestSummaryStats:
         assert summary["total_cost"] == pytest.approx(0.15)
 
 
+class TestEpisodeSummary:
+
+    def test_summary_appended_per_step(self, tmp_dir, sample_env_output, sample_agent_output):
+        from cube_harness.summary import SummaryProcessor
+
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1", "agent_name": "A"})
+        traj.steps.append(TrajectoryStep(output=sample_env_output))
+        storage.save_trajectory(traj)
+
+        ep_dir = storage._current_episode_dirs["task_1_ep0"]
+        proc = SummaryProcessor(ep_dir)
+        proc.on_step(0, traj.steps[0])
+
+        step1 = TrajectoryStep(output=sample_agent_output)
+        storage.save_step(step1, "task_1_ep0", 1)
+        proc.on_step(1, step1)
+
+        step2 = TrajectoryStep(output=sample_env_output)
+        storage.save_step(step2, "task_1_ep0", 2)
+        proc.on_step(2, step2)
+
+        summary_path = ep_dir / "episode_summary.jsonl"
+        assert summary_path.exists()
+        with open(summary_path) as f:
+            lines = f.readlines()
+        assert len(lines) == 3
+
+        last = json.loads(lines[-1])
+        assert last["n_env_steps"] == 2
+        assert last["n_agent_steps"] == 1
+        assert last["step_num"] == 2
+
+    def test_summary_tracks_running_totals(self, tmp_dir):
+        from cube_harness.summary import SummaryProcessor
+
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1", "agent_name": "A"})
+        obs = Observation.from_text("obs")
+        traj.steps.append(TrajectoryStep(output=EnvironmentOutput(obs=obs, reward=0.0)))
+        storage.save_trajectory(traj)
+
+        ep_dir = storage._current_episode_dirs["task_1_ep0"]
+        proc = SummaryProcessor(ep_dir)
+        proc.on_step(0, traj.steps[0])
+
+        llm_call = LLMCall(
+            id="c1",
+            llm_config=LLMConfig(model_name="test"),
+            prompt=Prompt(messages=[{"role": "user", "content": "hi"}]),
+            output=Message(role="assistant", content="hello"),
+        )
+        llm_call.usage.prompt_tokens = 100
+        llm_call.usage.completion_tokens = 50
+        llm_call.usage.cost = 0.01
+        agent_step = TrajectoryStep(output=AgentOutput(
+            actions=[Action(name="click", arguments={})],
+            llm_calls=[llm_call],
+        ))
+        storage.save_step(agent_step, "task_1_ep0", 1)
+        proc.on_step(1, agent_step)
+
+        summary_path = ep_dir / "episode_summary.jsonl"
+        with open(summary_path) as f:
+            lines = f.readlines()
+        last = json.loads(lines[-1])
+        assert last["prompt_tokens"] == 100
+        assert last["completion_tokens"] == 50
+        assert last["cost"] == pytest.approx(0.01)
+        assert last["total_actions"] == 1
+        assert last["total_llm_calls"] == 1
+
+
 class TestMsgpackZstFormat:
 
     def test_step_files_are_binary(self, tmp_dir, sample_env_output):

@@ -15,6 +15,7 @@ from cube_harness.core import AgentOutput, Trajectory, TrajectoryStep
 from cube_harness.legacy import EnvConfig
 from cube_harness.metrics.tracer import get_tracer
 from cube_harness.storage import FileStorage, Storage
+from cube_harness.summary import SummaryProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +220,10 @@ class Episode:
                     start_time=start_time,
                 )
                 self.storage.save_trajectory(trajectory, allow_overwrite=self.allow_overwrite)
+                ep_dir = self.storage._current_episode_dirs.get(trajectory.id)
+                summary_proc = SummaryProcessor(ep_dir) if ep_dir else None
+                if summary_proc:
+                    summary_proc.on_step(0, trajectory.steps[0])
                 logger.info(colored(f"Start env output: {env_output}", "blue"))
                 turns = 0
                 while not env_output.done and turns < self.config.max_steps:
@@ -231,12 +236,16 @@ class Episode:
                             agent_output = AgentOutput(error=StepError.from_exception(e))
                             agent_step = TrajectoryStep(output=agent_output, start_time=ts, end_time=time.time())
                             self.storage.save_step(agent_step, trajectory.id, len(trajectory.steps))
+                            if summary_proc:
+                                summary_proc.on_step(len(trajectory.steps), agent_step)
                             trajectory.steps.append(agent_step)
                             raise e
 
                         self.log_agent_output(turns, agent_output)
                         agent_step = TrajectoryStep(output=agent_output, start_time=ts, end_time=time.time())
                         self.storage.save_step(agent_step, trajectory.id, len(trajectory.steps))
+                        if summary_proc:
+                            summary_proc.on_step(len(trajectory.steps), agent_step)
                         trajectory.steps.append(agent_step)
 
                         if not agent_output.actions and not agent_output.error:
@@ -251,12 +260,16 @@ class Episode:
                             env_output = EnvironmentOutput(obs=env_output.obs, error=StepError.from_exception(e))
                             env_step = TrajectoryStep(output=env_output, start_time=env_ts, end_time=time.time())
                             self.storage.save_step(env_step, trajectory.id, len(trajectory.steps))
+                            if summary_proc:
+                                summary_proc.on_step(len(trajectory.steps), env_step)
                             trajectory.steps.append(env_step)
                             raise e
 
                         logger.info(colored(f"Turn {turns} Env output: {env_output}", "blue"))
                         env_step = TrajectoryStep(output=env_output, start_time=env_ts, end_time=time.time())
                         self.storage.save_step(env_step, trajectory.id, len(trajectory.steps))
+                        if summary_proc:
+                            summary_proc.on_step(len(trajectory.steps), env_step)
                         trajectory.steps.append(env_step)
                         self._record_step_attributes(span, agent_output, env_output)
                         turns += 1
@@ -264,7 +277,8 @@ class Episode:
                 trajectory.reward_info = {"reward": env_output.reward, "done": env_output.done, **env_output.info}
                 trajectory.summary_stats = _compute_summary_stats(trajectory)
                 self.storage.save_trajectory(trajectory)
-                self.storage.update_experiment_summary(trajectory)
+                if summary_proc:
+                    summary_proc.on_episode_complete(trajectory, self.storage)
                 logger.info(colored(f"Episode completed in {turns} turns, reward: {env_output.reward}", "blue"))
                 final_reward = trajectory.last_env_step().reward
                 status = StatusCode.OK if final_reward > 0 else StatusCode.ERROR
