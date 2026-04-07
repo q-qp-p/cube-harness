@@ -189,7 +189,6 @@ class OSWorldBenchmark(Benchmark):
             "test_infeasible": ("extra_info.test_sets", "*'test_infeasible'*"),
         },
     )
-    task_metadata: ClassVar[dict[str, TaskMetadata]] = {}
     # task_metadata: populated automatically at import time in Benchmark.__init_subclass__
     task_config_class: ClassVar[type[TaskConfig]] = OSWorldTaskConfig
 

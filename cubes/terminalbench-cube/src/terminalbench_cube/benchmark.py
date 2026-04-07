@@ -82,8 +82,7 @@ class TerminalBenchBenchmark(Benchmark):
         tags=["terminal", "swe", "docker"],
         num_tasks=89,
     )
-
-    task_metadata: ClassVar[dict[str, TaskMetadata]] = {}
+    # task_metadata: populated automatically at import time in Benchmark.__init_subclass__
     task_config_class: ClassVar[type[TaskConfig]] = TerminalBenchTaskConfig
 
     # User-configurable fields

@@ -147,7 +147,6 @@ class SWEBenchLiveBenchmark(Benchmark):
             "full": ("extra_info.splits", "*'full'*"),
         },
     )
-
     task_metadata: ClassVar[dict[str, TaskMetadata]] = {}
     task_config_class: ClassVar[type[TaskConfig]] = SWEBenchLiveTaskConfig
 

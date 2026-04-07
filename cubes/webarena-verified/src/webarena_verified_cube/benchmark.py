@@ -30,7 +30,7 @@ class WebArenaVerifiedBenchmark(Benchmark):
         num_tasks=812,
         tags=["browser", "web", "ui", "webarena"],
     )
-    task_metadata: ClassVar[dict[str, TaskMetadata]] = {}
+    # task_metadata: populated automatically at import time in Benchmark.__init_subclass__
     task_config_class: ClassVar[type[TaskConfig]] = WebArenaVerifiedTaskConfig
 
     default_tool_config: ToolboxConfig = ToolboxConfig(tool_configs=[HarPlaywrightConfig(), SubmitResponseConfig()])  # type: ignore

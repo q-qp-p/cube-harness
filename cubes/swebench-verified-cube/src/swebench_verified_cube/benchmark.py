@@ -76,8 +76,7 @@ class SWEBenchVerifiedBenchmark(Benchmark):
         num_tasks=500,
         tags=["swe", "github", "docker"],
     )
-
-    task_metadata: ClassVar[dict[str, TaskMetadata]] = {}
+    # task_metadata: populated automatically at import time in Benchmark.__init_subclass__
     task_config_class: ClassVar[type[TaskConfig]] = SWEBenchVerifiedTaskConfig
 
     # User-configurable fields
