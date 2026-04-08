@@ -130,7 +130,7 @@ class TestFileStorageLogs:
     def test_get_log_path(self, tmp_dir: Path) -> None:
         storage = FileStorage(tmp_dir)
         log_path = storage.get_log_path("task_a_ep3")
-        assert log_path == Path(tmp_dir) / "logs" / "task_a_ep3.log"
+        assert log_path == Path(tmp_dir) / "task_a_ep3.log"
 
     def test_load_logs_returns_full_file_contents(self, tmp_dir: Path) -> None:
         storage = FileStorage(tmp_dir)

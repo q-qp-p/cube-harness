@@ -41,8 +41,6 @@ class Storage(Protocol):
     def update_experiment_summary(self, trajectory: Trajectory) -> None: ...
 
 
-# Thread-local zstd compressor/decompressor: these objects are NOT thread-safe,
-# so each thread gets its own instance (Ray workers, async episodes, etc.).
 _thread_local = threading.local()
 
 
@@ -83,16 +81,22 @@ def _read_step_file(path: Path) -> dict | None:
     return None
 
 
+def _resolve_llm_call_file(output_dir: Path, step_id: str, llm_call_id: str) -> Path:
+    flat = output_dir / f"{step_id}_{llm_call_id}.json"
+    if flat.exists():
+        return flat
+    return output_dir / "llm_calls" / f"{step_id}_{llm_call_id}.json"
+
+
 class FileStorage:
 
     def __init__(self, output_dir: str | Path) -> None:
         self.output_dir = Path(output_dir)
-        self._saved_ids: set[str] = set()  # trajectory IDs saved in this session (for resave detection)
+        self._saved_ids: set[str] = set()
 
     # --- V2 episode directory helpers ---
 
     def _episode_dir(self, trajectory_id: str) -> Path:
-        """Return the episode directory for a trajectory ID. O(1) — no scanning."""
         return self.output_dir / EPISODES_DIR / trajectory_id
 
     def _episode_dirs(self) -> Iterator[Path]:
@@ -103,19 +107,32 @@ class FileStorage:
             if ep_dir.is_dir() and ARCHIVED_MARKER not in ep_dir.name and (ep_dir / EPISODE_METADATA).exists():
                 yield ep_dir
 
-    # --- V1 trajectory file helpers ---
+    # --- V1 trajectory file helpers (flat output_dir + legacy trajectories/) ---
 
     def _v1_metadata_files(self) -> Iterator[Path]:
-        traj_dir = self.output_dir / TRAJECTORIES_DIR
-        if not traj_dir.exists():
-            return
-        for f in traj_dir.glob("*.metadata.json"):
-            if ARCHIVED_MARKER not in f.name:
-                yield f
+        seen: set[str] = set()
+        for search_dir in (self.output_dir, self.output_dir / TRAJECTORIES_DIR):
+            if not search_dir.exists():
+                continue
+            for f in search_dir.glob("*.metadata.json"):
+                if ARCHIVED_MARKER not in f.name:
+                    tid = f.stem.replace(".metadata", "")
+                    if tid not in seen:
+                        seen.add(tid)
+                        yield f
 
     @staticmethod
     def _v1_traj_id_from_file(metadata_file: Path) -> str:
         return metadata_file.stem.replace(".metadata", "")
+
+    def _v1_resolve_trajectory_paths(self, trajectory_id: str) -> tuple[Path, Path]:
+        meta = self.output_dir / f"{trajectory_id}.metadata.json"
+        jsonl = self.output_dir / f"{trajectory_id}.jsonl"
+        if not meta.exists():
+            legacy_meta = self.output_dir / TRAJECTORIES_DIR / f"{trajectory_id}.metadata.json"
+            if legacy_meta.exists():
+                return legacy_meta, self.output_dir / TRAJECTORIES_DIR / f"{trajectory_id}.jsonl"
+        return meta, jsonl
 
     # --- Write (always V2) ---
 
@@ -193,7 +210,6 @@ class FileStorage:
         if not ep_dir.exists():
             raise FileNotFoundError(f"Episode directory not found for trajectory: {trajectory_id}")
         steps_dir = ep_dir / STEPS_DIR
-        # Try both suffixes — exactly one should exist for a given step index
         for suffix in ("obs", "act"):
             path = steps_dir / f"{step_index:03d}_{suffix}.msgpack.zst"
             if path.exists():
@@ -201,9 +217,7 @@ class FileStorage:
         raise IndexError(f"Step {step_index} not found in {steps_dir}")
 
     def _v1_load_trajectory(self, trajectory_id: str) -> Trajectory:
-        traj_dir = self.output_dir / TRAJECTORIES_DIR
-        metadata_path = traj_dir / f"{trajectory_id}.metadata.json"
-        steps_path = traj_dir / f"{trajectory_id}.jsonl"
+        metadata_path, steps_path = self._v1_resolve_trajectory_paths(trajectory_id)
 
         if not metadata_path.exists():
             raise FileNotFoundError(f"Trajectory metadata not found: {metadata_path}")
@@ -235,12 +249,10 @@ class FileStorage:
             return step_data
 
         step_id = f"{trajectory_id}_step{step_num:03d}"
-        llm_calls_dir = self.output_dir / "llm_calls"
-
         resolved_calls = []
         for ref in llm_calls:
             if llm_call_id := ref.get("llm_call_id", None):
-                call_path = llm_calls_dir / f"{step_id}_{llm_call_id}.json"
+                call_path = _resolve_llm_call_file(self.output_dir, step_id, llm_call_id)
                 if not call_path.exists():
                     raise FileNotFoundError(f"LLM call file not found: {call_path}")
                 with open(call_path) as f:
@@ -257,7 +269,7 @@ class FileStorage:
         ep_dir = self._episode_dir(trajectory_id)
         metadata_path = ep_dir / EPISODE_METADATA
         if not metadata_path.exists():
-            metadata_path = self.output_dir / TRAJECTORIES_DIR / f"{trajectory_id}.metadata.json"
+            metadata_path, _ = self._v1_resolve_trajectory_paths(trajectory_id)
 
         if not metadata_path.exists():
             raise FileNotFoundError(f"Trajectory metadata not found: {metadata_path}")
@@ -316,7 +328,6 @@ class FileStorage:
         result: dict[str, float] = {}
         for ep_dir in self._episode_dirs():
             traj_id = ep_dir.name
-            # Prefer episode_summary.jsonl mtime (appended every step) over scanning all step files
             summary_path = ep_dir / "episode_summary.jsonl"
             if summary_path.exists():
                 result[traj_id] = summary_path.stat().st_mtime
@@ -326,11 +337,10 @@ class FileStorage:
 
     def _v1_list_ids_with_mtime(self) -> dict[str, float]:
         result: dict[str, float] = {}
-        traj_dir = self.output_dir / TRAJECTORIES_DIR
         for metadata_file in self._v1_metadata_files():
             traj_id = self._v1_traj_id_from_file(metadata_file)
             mtime = metadata_file.stat().st_mtime
-            jsonl_path = traj_dir / f"{traj_id}.jsonl"
+            jsonl_path = metadata_file.parent / f"{traj_id}.jsonl"
             if jsonl_path.exists():
                 mtime = max(mtime, jsonl_path.stat().st_mtime)
             result[traj_id] = mtime
@@ -368,11 +378,16 @@ class FileStorage:
     def load_logs(self, trajectory_id: str) -> str:
         log_path = self.get_log_path(trajectory_id)
         if not log_path.exists():
-            return ""
+            legacy_log_path = self.output_dir / "logs" / f"{trajectory_id}.log"
+            if not legacy_log_path.exists():
+                return ""
+            log_path = legacy_log_path
         return log_path.read_text()
 
     def has_logs(self, trajectory_id: str) -> bool:
-        return self.get_log_path(trajectory_id).exists()
+        log_path = self.get_log_path(trajectory_id)
+        legacy_log_path = self.output_dir / "logs" / f"{trajectory_id}.log"
+        return log_path.exists() or legacy_log_path.exists()
 
     # --- Experiment summary ---
 
@@ -435,7 +450,13 @@ class FileStorage:
         return EpisodeConfig.model_validate(data)
 
     def list_episode_configs(self) -> list[Path]:
-        config_dir = self.output_dir / "episode_configs"
-        if not config_dir.exists():
-            return []
-        return list(config_dir.glob("episode_*_task_*.json"))
+        seen_names: set[str] = set()
+        result: list[Path] = []
+        for search_dir in [self.output_dir / "episode_configs", self.output_dir]:
+            if not search_dir.exists():
+                continue
+            for p in search_dir.glob("episode_*_task_*.json"):
+                if p.name not in seen_names:
+                    seen_names.add(p.name)
+                    result.append(p)
+        return result

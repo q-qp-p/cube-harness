@@ -52,7 +52,7 @@ class Experiment(TypedBaseModel):
         storage = FileStorage(self.output_dir)
         config_files = storage.list_episode_configs()
         if not config_files:
-            logger.warning(f"No episode configs found in {self.output_dir / 'episode_configs'}, creating from scratch")
+            logger.warning(f"No episode configs found in {self.output_dir}, creating from scratch")
             return self._create_all_episodes()
 
         started_ids = self._load_started_trajectory_ids()
@@ -86,6 +86,8 @@ class Experiment(TypedBaseModel):
                     task_config=tc,
                     exp_name=self.name,
                     max_steps=self.max_steps,
+                    runtime_context=self.benchmark._runtime_context,
+                    container_backend=self.benchmark.container_backend,
                 )
                 for i, tc in enumerate(task_configs)
             ]
