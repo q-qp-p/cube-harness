@@ -23,7 +23,7 @@ from pydantic import PrivateAttr
 
 from cube.benchmark import RuntimeContext  # noqa: F401 — triggers OSWorldTask.model_rebuild()
 from cube.core import Observation
-from cube.task import Task
+from cube.task import Task, TaskMetadata
 from cube.vm import VM, VMBackend, VMConfig
 
 from cube_computer_tool.axtree import linearize_accessibility_tree, tag_screenshot
@@ -35,6 +35,33 @@ if TYPE_CHECKING:
     from cube_computer_tool.computer import ComputerBase
 
 logger = logging.getLogger(__name__)
+
+
+class OSWorldTaskMetadata(TaskMetadata):
+    """TaskMetadata subclass for OSWorld tasks.
+
+    Public fields shipped in task_metadata.json (available at import time).
+    Heavy execution data (config, evaluator) lives in the per-task execution
+    cache and is loaded lazily by OSWorldTaskConfig.make().
+    """
+
+    domain: str
+    """Desktop domain, e.g. 'chrome', 'os', 'libreoffice_calc'."""
+
+    test_sets: list[str]
+    """OSWorld test sets this task belongs to, e.g. ['test_all', 'test_small']."""
+
+    instruction: str
+    """Full agent-facing task instruction."""
+
+    snapshot: str
+    """VM snapshot name to restore before the task starts."""
+
+    os_type: str
+    """Guest OS type used for accessibility-tree linearisation ('ubuntu' or 'windows')."""
+
+    related_apps: list[str]
+    """Applications involved in the task, e.g. ['chrome', 'libreoffice_calc']."""
 
 
 class OSWorldTask(Task):
@@ -69,6 +96,7 @@ class OSWorldTask(Task):
         metadata.extra_info["instruction"]  — used as the agent's goal text
         metadata.abstract_description       — short description of the task type (may be empty)
     """
+    metadata: OSWorldTaskMetadata  # type: ignore[assignment] — TaskMetadata subclass with OSWorld-specific fields
 
     vm_backend: VMBackend | None = None
     """HOW to provision the VM. If None, a pre-launched VM must be attached via
@@ -89,11 +117,6 @@ class OSWorldTask(Task):
         """Return self.tool cast to ComputerBase for type-checker satisfaction."""
         return self.tool  # type: ignore[return-value]
 
-    def _os_type(self) -> str:
-        """Return the OS type string ('ubuntu' or 'windows') for axtree processing."""
-        raw = self.metadata.extra_info.get("os_type", "Ubuntu")
-        return raw.lower()
-
     def _ensure_vm(self) -> None:
         """Launch the VM if a vm_backend is configured and no VM is running yet."""
         if self._vm is not None:
@@ -101,8 +124,7 @@ class OSWorldTask(Task):
         if self.vm_backend is None:
             return
 
-        snapshot = self.metadata.extra_info.get("snapshot", "init_state")
-        vm_config = VMConfig(snapshot_name=snapshot)
+        vm_config = VMConfig(snapshot_name=self.metadata.snapshot)
         logger.info("Launching VM via %s", type(self.vm_backend).__name__)
         self._vm = self.vm_backend.launch(vm_config)
         self._computer.attach_vm(self._vm)
@@ -196,30 +218,29 @@ class OSWorldTask(Task):
         """
         self._ensure_vm()
         self.tool.reset()
-        extra = self.metadata.extra_info
 
         task_data = {
             "id": self.metadata.id,
-            "instruction": extra.get("instruction", ""),
-            "config": extra.get("config", []),
-            "evaluator": extra.get("evaluator", {}),
-            "snapshot": extra.get("snapshot", "init_state"),
-            "related_apps": extra.get("related_apps", []),
+            "instruction": self.metadata.instruction,
+            "config": self.metadata.extra_info.get("config", []),   # loaded from execution cache in make()
+            "evaluator": self.metadata.extra_info.get("evaluator", {}),
+            "snapshot": self.metadata.snapshot,
+            "related_apps": self.metadata.related_apps,
         }
 
-        logger.info("Resetting OSWorldTask %s (domain=%s)", self.metadata.id, extra.get("domain", "unknown"))
+        logger.info("Resetting OSWorldTask %s (domain=%s)", self.metadata.id, self.metadata.domain)
 
         obs = self._setup_task(task_data)
         obs = self.obs_postprocess(obs)
 
-        goal_obs = Observation.from_text(f"Task: {extra.get('instruction', '')}")
+        goal_obs = Observation.from_text(f"Task: {self.metadata.instruction}")
         obs = goal_obs + obs
 
         info = {
             "task_id": self.metadata.id,
-            "task_domain": extra.get("domain", "unknown"),
-            "task_snapshot": extra.get("snapshot", "init_state"),
-            "task_related_apps": extra.get("related_apps", []),
+            "task_domain": self.metadata.domain,
+            "task_snapshot": self.metadata.snapshot,
+            "task_related_apps": self.metadata.related_apps,
         }
         return obs, info
 
@@ -258,7 +279,7 @@ class OSWorldTask(Task):
 
     def _postprocess_linearize(self, obs: Observation) -> Observation:
         """Replace raw axtree XML with a linearized tab-separated table."""
-        platform = self._os_type()
+        platform = self.metadata.os_type.lower()
         new_contents = []
         for content in obs.contents:
             if content.name == "accessibility_tree":
@@ -278,8 +299,7 @@ class OSWorldTask(Task):
         Falls back to _postprocess_linearize if screenshot or axtree are missing,
         or if the annotation fails.
         """
-        platform = self._os_type()
-
+        platform = self.metadata.os_type.lower()
         screenshot_content = None
         axtree_content = None
         for content in obs.contents:

@@ -244,18 +244,20 @@ class TestComputer:
 
 
 def _make_task_metadata(task_id: str = "t1", instruction: str = "Do something"):
-    from cube.task import TaskMetadata
+    from osworld_cube.task import OSWorldTaskMetadata
 
-    return TaskMetadata(
+    return OSWorldTaskMetadata(
         id=task_id,
-        abstract_description=instruction,
+        abstract_description="",
+        instruction=instruction,
+        domain="os",
+        test_sets=["test_all"],
+        snapshot="init_state",
+        os_type="ubuntu",
+        related_apps=[],
         extra_info={
-            "instruction": instruction,
-            "domain": "os",
-            "snapshot": "init_state",
             "config": [],
             "evaluator": {"func": "check_file", "expected": {}},
-            "related_apps": [],
         },
     )
 
@@ -364,7 +366,6 @@ class TestOSWorldTask:
         task = OSWorldTask(metadata=_make_task_metadata(), tool_config=ComputerConfig())
         mock_vm = _make_mock_vm()
         task._vm = mock_vm
-        task._current_task_config = {"id": "t1", "evaluator": {"func": "check_file"}}
         task._computer._guest = _make_mock_guest()
 
         with patch(PATCH_EVALUATOR) as mock_eval_cls:
@@ -375,13 +376,21 @@ class TestOSWorldTask:
         assert "evaluator" in info
 
     def test_evaluate_no_evaluator_returns_zero(self) -> None:
-        from cube.task import TaskMetadata
-
         from osworld_cube.computer import ComputerConfig
-        from osworld_cube.task import OSWorldTask
+        from osworld_cube.task import OSWorldTask, OSWorldTaskMetadata
 
         task = OSWorldTask(
-            metadata=TaskMetadata(id="no-eval", extra_info={}),
+            metadata=OSWorldTaskMetadata(
+                id="no-eval",
+                abstract_description="",
+                instruction="",
+                domain="os",
+                test_sets=[],
+                snapshot="init_state",
+                os_type="ubuntu",
+                related_apps=[],
+                extra_info={},
+            ),
             tool_config=ComputerConfig(),
         )
         reward, info = task.evaluate(Observation())
@@ -498,7 +507,7 @@ class TestOSWorldBenchmark:
     def test_benchmark_metadata(self) -> None:
         from osworld_cube.benchmark import OSWorldBenchmark
 
-        assert OSWorldBenchmark.benchmark_metadata.name == "osworld"
+        assert OSWorldBenchmark.benchmark_metadata.name == "osworld-cube"
         assert OSWorldBenchmark.task_config_class.__name__ == "OSWorldTaskConfig"
 
     def test_domain_filter_via_subset_from_glob(self) -> None:
@@ -507,10 +516,10 @@ class TestOSWorldBenchmark:
 
         bench = OSWorldBenchmark(default_tool_config=ComputerConfig())
         bench.setup()
-        chrome_bench = bench.subset_from_glob("extra_info.domain", "chrome")
+        chrome_bench = bench.subset_from_glob("domain", "chrome")
 
         assert len(chrome_bench.task_metadata) < len(bench.task_metadata)
-        assert all(tm.extra_info["domain"] == "chrome" for tm in chrome_bench.task_metadata.values())
+        assert all(tm.domain == "chrome" for tm in chrome_bench.task_metadata.values())
 
     def test_get_task_configs_returns_osworld_task_configs(self) -> None:
         from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTaskConfig
@@ -532,7 +541,9 @@ class TestOSWorldBenchmark:
         bench.setup()
 
         cfg = next(bench.get_task_configs())
-        task = cfg.make()
+        fake_exec_info = {"config": [], "evaluator": {"func": "check_file"}}
+        with patch.object(OSWorldBenchmark, "load_task_execution_info", return_value=fake_exec_info):
+            task = cfg.make()
 
         assert isinstance(task, OSWorldTask)
         assert task.metadata.id == cfg.task_id
@@ -552,3 +563,266 @@ class TestOSWorldBenchmark:
         from osworld_cube.computer import ComputerConfig
 
         OSWorldBenchmark(default_tool_config=ComputerConfig()).close()
+
+
+# ---------------------------------------------------------------------------
+# scripts/create_task_metadata.py
+# ---------------------------------------------------------------------------
+
+import importlib.util
+import json as _json
+
+_SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "create_task_metadata.py"
+
+
+def _load_script():
+    """Import create_task_metadata.py as a module (path-based, no package needed)."""
+    spec = importlib.util.spec_from_file_location("create_task_metadata", _SCRIPT_PATH)
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+def _make_fake_repo(root: Path) -> Path:
+    """Create a minimal OSWorld repo structure under *root* with 2 tasks."""
+    repo = root / "OSWorld"
+    eval_dir = repo / "evaluation_examples"
+    examples_dir = eval_dir / "examples" / "os"
+    examples_dir.mkdir(parents=True)
+
+    # Two tasks both in test_all; task-b also in test_small
+    (eval_dir / "test_all.json").write_text(_json.dumps({"os": ["task-a", "task-b"]}))
+    (eval_dir / "test_small.json").write_text(_json.dumps({"os": ["task-b"]}))
+    (eval_dir / "test_nogdrive.json").write_text(_json.dumps({}))
+    (eval_dir / "test_infeasible.json").write_text(_json.dumps({}))
+
+    for task_id, instr in [("task-a", "Do A"), ("task-b", "Do B")]:
+        (examples_dir / f"{task_id}.json").write_text(
+            _json.dumps({
+                "id": task_id,
+                "instruction": instr,
+                "snapshot": "init_state",
+                "os_type": "ubuntu",
+                "related_apps": ["os"],
+                "config": [],
+                "evaluator": {"func": "check_include_exclude"},
+            })
+        )
+    return repo
+
+
+class TestCreateTaskMetadata:
+    def test_generates_file_from_repo(self, tmp_path: Path) -> None:
+        repo = _make_fake_repo(tmp_path)
+        out = tmp_path / "task_metadata.json"
+
+        mod = _load_script()
+        count = mod.generate_task_metadata(repo_dir=repo, output_path=out)
+
+        assert count == 2
+        assert out.exists()
+        tasks = _json.loads(out.read_text())
+        assert len(tasks) == 2
+        ids = {t["id"] for t in tasks}
+        assert ids == {"task-a", "task-b"}
+
+    def test_correct_typed_fields(self, tmp_path: Path) -> None:
+        repo = _make_fake_repo(tmp_path)
+        out = tmp_path / "task_metadata.json"
+
+        mod = _load_script()
+        mod.generate_task_metadata(repo_dir=repo, output_path=out)
+
+        tasks = {t["id"]: t for t in _json.loads(out.read_text())}
+        assert tasks["task-a"]["domain"] == "os"
+        assert tasks["task-a"]["instruction"] == "Do A"
+        assert tasks["task-a"]["snapshot"] == "init_state"
+        assert tasks["task-a"]["os_type"] == "ubuntu"
+        assert tasks["task-a"]["extra_info"] == {}
+        assert "test_all" in tasks["task-a"]["test_sets"]
+        assert "test_small" not in tasks["task-a"]["test_sets"]
+        assert "test_small" in tasks["task-b"]["test_sets"]
+
+    def test_idempotent_skips_existing(self, tmp_path: Path) -> None:
+        repo = _make_fake_repo(tmp_path)
+        out = tmp_path / "task_metadata.json"
+
+        mod = _load_script()
+        count1 = mod.generate_task_metadata(repo_dir=repo, output_path=out)
+        mtime_after_first = out.stat().st_mtime
+
+        count2 = mod.generate_task_metadata(repo_dir=repo, output_path=out)
+
+        assert count1 == 2
+        assert count2 == 0
+        assert out.stat().st_mtime == mtime_after_first  # file untouched
+
+    def test_force_overwrites_existing(self, tmp_path: Path) -> None:
+        repo = _make_fake_repo(tmp_path)
+        out = tmp_path / "task_metadata.json"
+
+        mod = _load_script()
+        mod.generate_task_metadata(repo_dir=repo, output_path=out)
+        count = mod.generate_task_metadata(repo_dir=repo, output_path=out, force=True)
+
+        assert count == 2
+
+    def test_missing_repo_raises_when_clone_disabled(self, tmp_path: Path) -> None:
+        import pytest
+        out = tmp_path / "task_metadata.json"
+
+        mod = _load_script()
+        with pytest.raises(RuntimeError, match="OSWorld repo not found"):
+            mod.generate_task_metadata(
+                repo_dir=tmp_path / "nonexistent",
+                output_path=out,
+                clone_if_missing=False,
+            )
+
+    def test_no_config_or_evaluator_in_output(self, tmp_path: Path) -> None:
+        """task_metadata.json must not contain config or evaluator (execution data)."""
+        repo = _make_fake_repo(tmp_path)
+        out = tmp_path / "task_metadata.json"
+
+        mod = _load_script()
+        mod.generate_task_metadata(repo_dir=repo, output_path=out)
+
+        tasks = _json.loads(out.read_text())
+        for task in tasks:
+            assert "config" not in task
+            assert "evaluator" not in task
+
+
+# ---------------------------------------------------------------------------
+# OSWorldBenchmark.install() / uninstall()
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_task_metadata(tmp_path: Path) -> dict:
+    """Return a minimal task_metadata dict with one task for install() tests."""
+    from osworld_cube.task import OSWorldTaskMetadata
+
+    tm = OSWorldTaskMetadata(
+        id="task-a",
+        abstract_description="",
+        instruction="Do A",
+        domain="os",
+        test_sets=["test_all"],
+        snapshot="init_state",
+        os_type="ubuntu",
+        related_apps=["os"],
+    )
+    return {tm.id: tm}
+
+
+def _install_patches(repo: Path, cache_dir: Path, fake_tm: dict):
+    """Return a list of context managers that isolate install() from the real filesystem."""
+    from osworld_cube.benchmark import OSWorldBenchmark
+
+    return [
+        patch.object(OSWorldBenchmark, "task_metadata", fake_tm),
+        patch("osworld_cube.benchmark.OSWORLD_REPO_DIR", repo),
+        patch.object(OSWorldBenchmark, "task_execution_cache_dir", return_value=cache_dir),
+        patch("osworld_cube.benchmark.ensure_proxy_config_in_env"),
+        patch("osworld_cube.benchmark.load_dotenv"),
+    ]
+
+
+class TestInstall:
+    def test_install_populates_execution_cache(self, tmp_path: Path) -> None:
+        from contextlib import ExitStack
+
+        from osworld_cube.benchmark import OSWorldBenchmark
+
+        repo = _make_fake_repo(tmp_path)
+        cache_dir = tmp_path / "cache"
+        fake_tm = _make_fake_task_metadata(tmp_path)
+
+        with ExitStack() as stack:
+            for p in _install_patches(repo, cache_dir, fake_tm):
+                stack.enter_context(p)
+            OSWorldBenchmark.install()
+
+        assert (cache_dir / "task-a.json").exists()
+        exec_info = _json.loads((cache_dir / "task-a.json").read_text())
+        assert "config" in exec_info
+        assert "evaluator" in exec_info
+
+    def test_install_is_idempotent(self, tmp_path: Path) -> None:
+        from contextlib import ExitStack
+
+        from osworld_cube.benchmark import OSWorldBenchmark
+
+        repo = _make_fake_repo(tmp_path)
+        cache_dir = tmp_path / "cache"
+        fake_tm = _make_fake_task_metadata(tmp_path)
+
+        with ExitStack() as stack:
+            for p in _install_patches(repo, cache_dir, fake_tm):
+                stack.enter_context(p)
+            OSWorldBenchmark.install()
+            mtime = (cache_dir / "task-a.json").stat().st_mtime
+            OSWorldBenchmark.install()  # second call
+
+        assert (cache_dir / "task-a.json").stat().st_mtime == mtime  # file untouched
+
+    def test_install_does_not_write_task_metadata_json(self, tmp_path: Path) -> None:
+        from contextlib import ExitStack
+
+        from osworld_cube.benchmark import OSWorldBenchmark
+
+        repo = _make_fake_repo(tmp_path)
+        cache_dir = tmp_path / "cache"
+        metadata_json = tmp_path / "task_metadata.json"
+        fake_tm = _make_fake_task_metadata(tmp_path)
+
+        with ExitStack() as stack:
+            for p in _install_patches(repo, cache_dir, fake_tm):
+                stack.enter_context(p)
+            OSWorldBenchmark.install()
+
+        assert not metadata_json.exists()
+
+    def test_uninstall_removes_execution_cache_and_repo(self, tmp_path: Path) -> None:
+        from osworld_cube.benchmark import OSWorldBenchmark
+
+        repo = _make_fake_repo(tmp_path)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        (cache_dir / "task-a.json").write_text("{}")
+
+        with (
+            patch("osworld_cube.benchmark.OSWORLD_REPO_DIR", repo),
+            patch.object(OSWorldBenchmark, "task_execution_cache_dir", return_value=cache_dir),
+        ):
+            OSWorldBenchmark.uninstall()
+
+        assert not cache_dir.exists()
+        assert not repo.exists()
+
+    def test_uninstall_does_not_remove_task_metadata_json(self, tmp_path: Path) -> None:
+        from osworld_cube.benchmark import OSWorldBenchmark
+
+        repo = _make_fake_repo(tmp_path)
+        cache_dir = tmp_path / "cache"
+        metadata_json = tmp_path / "task_metadata.json"
+        metadata_json.write_text("[]")
+
+        with (
+            patch("osworld_cube.benchmark.OSWORLD_REPO_DIR", repo),
+            patch.object(OSWorldBenchmark, "task_execution_cache_dir", return_value=cache_dir),
+        ):
+            OSWorldBenchmark.uninstall()
+
+        assert metadata_json.exists()
+
+    def test_install_raises_when_task_metadata_empty(self, tmp_path: Path) -> None:
+        import pytest
+
+        from osworld_cube.benchmark import OSWorldBenchmark
+
+        with (
+            patch.object(OSWorldBenchmark, "task_metadata", {}),
+        ):
+            with pytest.raises(RuntimeError, match="task_metadata is empty"):
+                OSWorldBenchmark.install()
