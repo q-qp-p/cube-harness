@@ -23,9 +23,9 @@
 | `webarena-verified` | ✅ done | `install()` calls `WebArenaVerified().get_tasks()` and saves `task_metadata.json`; idempotent (skips if file exists) |
 | `swebench-verified-cube` | ✅ done | `install()` downloads HF `test` split, saves JSON; `_setup()` applies filters from pre-loaded metadata |
 | `swebench-live-cube` | ✅ done | `install()` downloads all 4 HF splits (verified/full/test/lite), merges 1895 unique tasks with priority `verified>full>test>lite`, logs per-field diffs on conflict; `named_subsets` on `BenchmarkMetadata` maps split names to `subset_from_glob` patterns; recipe uses `.named_subset("lite")` |
-| `osworld-cube` | 🔲 todo | `install()` already downloads dataset; extend it to generate and save JSON from all domain files |
+| `osworld-cube` | ✅ done | `install()` clones repo (needed at runtime for settings_file paths) + saves `task_metadata.json` with all 4 test sets; `extra_info.test_sets` tracks membership; `named_subsets` for all 4 sets; `_setup()` applies `_fix_config_paths()`; debug tasks moved to `DebugOSWorldBenchmark` in `debug.py` with no-op `install()`/`uninstall()` and correct `num_tasks=2` |
 | `terminalbench-cube` | ✅ done | `install()` clones repo, reads task dirs, saves `task_metadata.json` (archive base64-encoded); `_setup()` applies filters + oracle_mode; `Task.reset()` decodes archive (base64 string from JSON, or raw bytes from `_setup()`) |
-| `workarena` | 🔲 todo | `install()` calls `get_all_tasks_agents()` for all three levels (l1/l2/l3), merges, saves JSON; `level` becomes a `subset_from_glob` concern |
+| `workarena` | ✅ done | `install()` enumerates all task types (L1 + L2/L3 agent superset), marks `in_human_curriculum` per task, saves `task_metadata.json`; `WorkArenaSeedGenerator` wraps `get_all_tasks_agents()` and plugs into `Benchmark.seed_generator`; `_setup()` filters by level + sets seed generator; `named_subsets` for l1/l2/l3; human curriculum via `.subset_from_glob("extra_info.in_human_curriculum", "True")`; debug uses `subset_from_list` on first 2 L1 tasks |
 
 ## Order of work
 
