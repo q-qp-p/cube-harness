@@ -494,7 +494,6 @@ class TestOSWorldTestSet:
 # ---------------------------------------------------------------------------
 
 
-
 class TestOSWorldBenchmark:
     def test_benchmark_metadata(self) -> None:
         from osworld_cube.benchmark import OSWorldBenchmark
@@ -511,10 +510,7 @@ class TestOSWorldBenchmark:
         chrome_bench = bench.subset_from_glob("extra_info.domain", "chrome")
 
         assert len(chrome_bench.task_metadata) < len(bench.task_metadata)
-        assert all(
-            tm.extra_info["domain"] == "chrome"
-            for tm in chrome_bench.task_metadata.values()
-        )
+        assert all(tm.extra_info["domain"] == "chrome" for tm in chrome_bench.task_metadata.values())
 
     def test_get_task_configs_returns_osworld_task_configs(self) -> None:
         from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTaskConfig

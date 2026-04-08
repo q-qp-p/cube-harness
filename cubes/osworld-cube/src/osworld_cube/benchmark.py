@@ -183,9 +183,9 @@ class OSWorldBenchmark(Benchmark):
         num_tasks=369,
         tags=["desktop", "gui", "multimodal"],
         named_subsets={
-            "test_all":        ("extra_info.test_sets", "*'test_all'*"),
-            "test_small":      ("extra_info.test_sets", "*'test_small'*"),
-            "test_nogdrive":   ("extra_info.test_sets", "*'test_nogdrive'*"),
+            "test_all": ("extra_info.test_sets", "*'test_all'*"),
+            "test_small": ("extra_info.test_sets", "*'test_small'*"),
+            "test_nogdrive": ("extra_info.test_sets", "*'test_nogdrive'*"),
             "test_infeasible": ("extra_info.test_sets", "*'test_infeasible'*"),
         },
     )
@@ -298,7 +298,6 @@ class OSWorldBenchmark(Benchmark):
             check=True,
         )
         OSWORLD_VM_DIR.mkdir(parents=True, exist_ok=True)
-
 
     # ------------------------------------------------------------------
     # install() / uninstall()

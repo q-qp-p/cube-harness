@@ -133,9 +133,7 @@ class WorkArenaBenchmark(Benchmark):
                     filter=level, meta_seed=0, n_seed_l1=1, is_agent_curriculum=False
                 )
             }
-            for task_class, _ in get_all_tasks_agents(
-                filter=level, meta_seed=0, n_seed_l1=1, is_agent_curriculum=True
-            ):
+            for task_class, _ in get_all_tasks_agents(filter=level, meta_seed=0, n_seed_l1=1, is_agent_curriculum=True):
                 task_id = task_class.get_task_id()
                 if task_id not in metadata:
                     metadata[task_id] = TaskMetadata(
@@ -186,8 +184,7 @@ class WorkArenaBenchmark(Benchmark):
         # Populate instance-level shadow so each instance sees its own task view.
         # Filter to the configured level so get_task_configs() only iterates relevant tasks.
         level_metadata = {
-            tid: tm for tid, tm in type(self).task_metadata.items()
-            if tm.extra_info.get("level") == self.level
+            tid: tm for tid, tm in type(self).task_metadata.items() if tm.extra_info.get("level") == self.level
         }
         object.__setattr__(self, "task_metadata", level_metadata)
         type(self).task_metadata = level_metadata
@@ -195,7 +192,9 @@ class WorkArenaBenchmark(Benchmark):
         assert self.seed_generator._cache is not None
         n_task_configs = sum(len(seeds) for seeds in self.seed_generator._cache.values())
         self._runtime_context = {"level": self.level, "n_task_configs": n_task_configs}
-        logger.info(f"WorkArena benchmark setup complete: {len(level_metadata)} task type(s), {n_task_configs} task config(s)")
+        logger.info(
+            f"WorkArena benchmark setup complete: {len(level_metadata)} task type(s), {n_task_configs} task config(s)"
+        )
 
     def close(self) -> None:
         """No-op: WorkArena has no server process to shut down."""

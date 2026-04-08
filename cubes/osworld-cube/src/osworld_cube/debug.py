@@ -28,7 +28,6 @@ from cube.core import Action, ActionSchema, Observation
 from cube.task import TaskConfig, TaskMetadata
 from cube.vm import VMBackend
 from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTaskConfig
-from osworld_cube.computer import ComputerConfig
 from osworld_cube.task import OSWorldTask
 from osworld_cube.vm_backend import OSWorldQEMUVMBackend
 
@@ -46,9 +45,7 @@ class DebugOSWorldTaskConfig(OSWorldTaskConfig):
         """Instantiate OSWorldTask from the debug benchmark's task_metadata."""
         metadata = DebugOSWorldBenchmark.task_metadata[self.task_id]
         if self.tool_config is None:
-            raise ValueError(
-                f"DebugOSWorldTaskConfig for task '{self.task_id}' has no tool_config."
-            )
+            raise ValueError(f"DebugOSWorldTaskConfig for task '{self.task_id}' has no tool_config.")
         return OSWorldTask(
             metadata=metadata,
             tool_config=self.tool_config,
@@ -67,9 +64,7 @@ class DebugOSWorldBenchmark(OSWorldBenchmark):
     """
 
     benchmark_metadata = OSWorldBenchmark.benchmark_metadata.model_copy(update={"num_tasks": 2, "named_subsets": {}})
-    task_metadata: ClassVar[dict[str, TaskMetadata]] = Benchmark.task_metadata_from_json(
-        _DEBUG_TASK_METADATA_JSON
-    )
+    task_metadata: ClassVar[dict[str, TaskMetadata]] = Benchmark.task_metadata_from_json(_DEBUG_TASK_METADATA_JSON)
     task_config_class: ClassVar[type[TaskConfig]] = DebugOSWorldTaskConfig
 
     @classmethod
@@ -81,6 +76,7 @@ class DebugOSWorldBenchmark(OSWorldBenchmark):
     def uninstall(cls) -> None:
         """No-op: debug benchmark has no external resources to remove."""
         logger.info("DebugOSWorldBenchmark.uninstall() — nothing to do")
+
 
 # ---------------------------------------------------------------------------
 # Hardcoded action sequences per task ID
