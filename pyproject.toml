@@ -72,6 +72,7 @@ terminalbench-cube = { path = "cubes/terminalbench-cube", editable = true }
 miniwob-cube = { path = "cubes/miniwob", editable = true }
 webarena-verified-cube = { path = "cubes/webarena-verified", editable = true }
 workarena-cube = { path = "cubes/workarena", editable = true }
+cube-standard = { git = "https://github.com/The-AI-Alliance/cube-standard", branch = "task-metadata" } # TODO: remove once #77 is merged and released
 
 [tool.ruff]
 fix = true
