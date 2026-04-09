@@ -153,6 +153,7 @@ class SWEBenchLiveBenchmark(Benchmark):
         task_execution_info_cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Download from HuggingFace into our own cache folder (not the default ~/.cache/huggingface)
+        # load_dataset is idempotent: if the data is already cached there, no download occurs.
         hf_cache = str(cls.cache_dir() / "huggingface_cache")
         rows_by_split: dict[str, list[dict[str, Any]]] = {}
         for split in _SPLIT_PRIORITY:

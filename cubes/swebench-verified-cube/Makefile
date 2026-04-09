@@ -4,7 +4,7 @@ test:
 	uv run cube test swebench-verified-cube
 
 debug:
-	uv run python -n swebench_verified_cube.debug
+	uv run python -m swebench_verified_cube.debug
 
 install:
 	uv sync --all-extras
