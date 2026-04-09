@@ -88,7 +88,6 @@ def _resolve_llm_call_file(output_dir: Path, step_id: str, llm_call_id: str) -> 
     return output_dir / "llm_calls" / f"{step_id}_{llm_call_id}.json"
 
 
-
 class FileStorage:
     def __init__(self, output_dir: str | Path) -> None:
         self.output_dir = Path(output_dir)
@@ -452,21 +451,17 @@ class FileStorage:
 
         return EpisodeConfig.model_validate(data)
 
-    def _planned_episode_dirs(self) -> Iterator[Path]:
+    def _episode_config_dirs(self) -> Iterator[Path]:
+        """Yield all non-archived episode dirs that have episode_config.json (planned or run)."""
         episodes_dir = self.output_dir / EPISODES_DIR
         if not episodes_dir.exists():
             return
         for ep_dir in episodes_dir.iterdir():
-            if (
-                ep_dir.is_dir()
-                and ARCHIVED_MARKER not in ep_dir.name
-                and (ep_dir / "episode_config.json").exists()
-                and not (ep_dir / EPISODE_METADATA).exists()
-            ):
+            if ep_dir.is_dir() and ARCHIVED_MARKER not in ep_dir.name and (ep_dir / "episode_config.json").exists():
                 yield ep_dir
 
     def list_episode_configs(self) -> list[Path]:
-        v2_configs = [ep_dir / "episode_config.json" for ep_dir in self._planned_episode_dirs()]
+        v2_configs = [ep_dir / "episode_config.json" for ep_dir in self._episode_config_dirs()]
         v1_config_dir = self.output_dir / "episode_configs"
         v1_configs = list(v1_config_dir.glob("episode_*_task_*.json")) if v1_config_dir.exists() else []
         return v2_configs + v1_configs
