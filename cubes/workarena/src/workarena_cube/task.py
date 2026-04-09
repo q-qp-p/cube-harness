@@ -1,6 +1,7 @@
 """WorkArena task implementation for the CUBE framework."""
 
 import importlib
+import inspect
 import logging
 import time
 from typing import Any, Protocol, runtime_checkable
@@ -189,10 +190,20 @@ class WorkArenaTask(Task):
         return done
 
     def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
-        """Filter actions: remove ChatTool's send_message when no ChatTool is present."""
+        """Filter actions based on task contract.
+
+        - send_message: only available when a ChatTool is present
+        - send_msg_to_user: only available for tasks whose validate() reads chat_messages
+          (i.e. tasks that expect a natural-language answer from the agent, like chart
+          value retrieval or knowledge-base search). Hiding it from other tasks prevents
+          agents from using it as a reasoning channel and wasting their action budget.
+        """
+        filtered = actions
         if self._chat_tool is None:
-            return [a for a in actions if a.name != "send_message"]
-        return actions
+            filtered = [a for a in filtered if a.name != "send_message"]
+        if not self.metadata.extra_info.get("requires_chat_answer", False):
+            filtered = [a for a in filtered if a.name != "send_msg_to_user"]
+        return filtered
 
     def close(self) -> None:
         """Teardown the WorkArena task and close the tool."""
@@ -210,6 +221,7 @@ class WorkArenaTaskConfig(TaskConfig):
     """Serializable configuration for a single WorkArena task."""
 
     task_class_path: str | None = None
+    requires_chat_answer: bool = False
 
     def make(
         self,
@@ -221,7 +233,13 @@ class WorkArenaTaskConfig(TaskConfig):
         _ = runtime_context, container_backend
         if self.task_class_path is None:
             raise ValueError(f"task_class_path is required to instantiate WorkArenaTask (task_id={self.task_id})")
-        meta = TaskMetadata(id=self.task_id, extra_info={"task_class_path": self.task_class_path})
+        meta = TaskMetadata(
+            id=self.task_id,
+            extra_info={
+                "task_class_path": self.task_class_path,
+                "requires_chat_answer": self.requires_chat_answer,
+            },
+        )
         return WorkArenaTask(
             metadata=meta,
             tool_config=self.tool_config,

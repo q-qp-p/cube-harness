@@ -1,5 +1,6 @@
 """WorkArena benchmark implementation for the CUBE framework."""
 
+import inspect
 import logging
 import random
 from typing import ClassVar, Generator, Literal
@@ -67,12 +68,21 @@ class WorkArenaBenchmark(Benchmark):
         self._task_tuples = task_tuples
         self._runtime_context = {"level": self.level, "n_tasks": len(task_tuples)}
         metadata: dict[str, TaskMetadata] = {}
+        seen_classes: set[str] = set()
         for task_class, _seed in task_tuples:
             task_id = task_class.get_task_id()
             task_class_path = f"{task_class.__module__}.{task_class.__qualname__}"
+            if task_class_path not in seen_classes:
+                seen_classes.add(task_class_path)
+                validate_src = inspect.getsource(task_class.validate)
+                requires_chat_answer = "chat_messages[-1]" in validate_src
             metadata[task_id] = TaskMetadata(
                 id=task_id,
-                extra_info={"task_class_path": task_class_path, "level": self.level},
+                extra_info={
+                    "task_class_path": task_class_path,
+                    "level": self.level,
+                    "requires_chat_answer": requires_chat_answer,
+                },
             )
         # Populate instance-level shadow so each instance sees its own task view
         # (e.g. after subset_from_list / subset_from_glob). Also update the class-level
@@ -90,12 +100,13 @@ class WorkArenaBenchmark(Benchmark):
             task_id = task_class.get_task_id()
             if task_id not in self.task_metadata:
                 continue
-            task_class_path = f"{task_class.__module__}.{task_class.__qualname__}"
+            extra = self.task_metadata[task_id].extra_info
             yield WorkArenaTaskConfig(
                 task_id=task_id,
                 seed=seed,
                 tool_config=self.default_tool_config,
-                task_class_path=task_class_path,
+                task_class_path=extra["task_class_path"],
+                requires_chat_answer=extra.get("requires_chat_answer", False),
             )
 
     def close(self) -> None:
