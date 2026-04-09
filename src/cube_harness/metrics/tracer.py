@@ -46,7 +46,6 @@ _tool_tracer = trace.get_tracer(__name__)
 
 
 class _EpisodeBaggageSpanProcessor(SpanProcessor):
-
     @override
     def on_start(self, span: trace.Span, parent_context: Context | None = None) -> None:
         episode_id = baggage.get_baggage(CH_EPISODE, context=parent_context)
@@ -77,7 +76,6 @@ class Tracer(Protocol):
 
 
 class _AgentTracer:
-
     def __init__(self, provider: TracerProvider) -> None:
         self._provider = provider
         self._tracer = provider.get_tracer(__name__)

@@ -32,7 +32,6 @@ class LLMCallRef(BaseModel):
 
 
 class Storage(Protocol):
-
     def save_trajectory(self, trajectory: Trajectory, allow_overwrite: bool = False) -> None: ...
 
     def save_step(self, step: TrajectoryStep, trajectory_id: str, step_num: int) -> None: ...
@@ -90,7 +89,6 @@ def _resolve_llm_call_file(output_dir: Path, step_id: str, llm_call_id: str) -> 
 
 
 class FileStorage:
-
     def __init__(self, output_dir: str | Path) -> None:
         self.output_dir = Path(output_dir)
         self._saved_ids: set[str] = set()
