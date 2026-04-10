@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 from browsergym.core.action.base import execute_python_code

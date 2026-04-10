@@ -11,7 +11,12 @@ from cube.core import Action, Observation
 from cube_browser_playwright.playwright_session import PlaywrightSession, PlaywrightSessionConfig
 from PIL import Image
 
-from cube_harness.tools.browsergym import BrowsergymConfig, BrowsergymTool, _action_to_bgym_string, _build_action_schemas
+from cube_harness.tools.browsergym import (
+    BrowsergymConfig,
+    BrowsergymTool,
+    _action_to_bgym_string,
+    _build_action_schemas,
+)
 
 
 @pytest.fixture
