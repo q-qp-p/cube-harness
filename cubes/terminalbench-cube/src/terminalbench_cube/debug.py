@@ -28,7 +28,7 @@ _TASK_ACTIONS: dict[str, list[Action]] = {
         _FINAL,
     ],
     "overfull-hbox": [
-        Action(name="bash", arguments={"command": "bash /solution/solve.sh 2>&1"}),
+        Action(name="bash", arguments={"command": "bash /solution/solve.sh 2>&1", "timeout": 300}),
         _FINAL,
     ],
 }
