@@ -43,7 +43,7 @@ class SWEBenchVerifiedBenchmark(Benchmark):
         num_tasks=500,
         tags=["swe", "github", "docker"],
     )
-    task_metadata: ClassVar[dict[str, SWEBenchVerifiedTaskMetadata]]  # populated automatically at import time in Benchmark.__init_subclass__
+    task_metadata: ClassVar[dict[str, SWEBenchVerifiedTaskMetadata]]  # type: ignore - populated automatically at import time in Benchmark.__init_subclass__
     task_config_class: ClassVar[type[TaskConfig]] = SWEBenchVerifiedTaskConfig
 
     # User-configurable fields
@@ -81,9 +81,9 @@ class SWEBenchVerifiedBenchmark(Benchmark):
         logger.info(f"  {len(ds)} tasks loaded")  # type: ignore[arg-type]
 
         n = 0
-        for row in ds:  # type: ignore[union-attr]
-            iid = row["instance_id"]
-            (exec_cache_dir / f"{iid}.json").write_text(json.dumps(_build_execution_info(row)))
+        for row in ds:
+            iid = row["instance_id"]  # type: ignore
+            (exec_cache_dir / f"{iid}.json").write_text(json.dumps(_build_execution_info(row)))  # type: ignore
             n += 1
 
         logger.info(f"Saved {n} execution cache files to {exec_cache_dir}")

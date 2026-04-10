@@ -115,7 +115,7 @@ def generate_task_metadata(
     rows = list(ds)  # type: ignore[arg-type]
     logger.info("  %d tasks downloaded", len(rows))
 
-    metadata = _build_task_metadata(rows)
+    metadata = _build_task_metadata(rows)  # type: ignore
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps([tm.model_dump() for tm in metadata.values()], indent=2))

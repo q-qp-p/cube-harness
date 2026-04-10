@@ -32,7 +32,6 @@ from typing import Any
 # Make the package importable when executed from the cube root without venv activation.
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import cube
 from cube.container import ContainerConfig
 from datasets import load_dataset
 
