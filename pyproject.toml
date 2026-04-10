@@ -15,7 +15,6 @@ dependencies = [
     "cube-browser-playwright>=0.2.0",  # added back temporarily for browsergym.py, should be removed once browsergym.py is moved to cube-browser-tool package
     "pydantic~=2.0",
     "litellm~=1.80.8",
-    "playwright==1.44",
     "Pillow~=11.0",
     "beautifulsoup4~=4.14",
     "numpy~=2.3.5",
