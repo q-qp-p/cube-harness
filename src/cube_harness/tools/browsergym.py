@@ -55,18 +55,10 @@ class BrowsergymConfig(ToolConfig):
 
 
 class BrowsergymTool(ToolWithTelemetry, BrowserTool):
-    """Thin wrapper over BrowserGym's action and observation utilities.
+    """Browser tool using BrowserGym's action set on a Playwright Page.
 
-    Actions are exposed directly from BrowserGym's HighLevelActionSet — the agent
-    sees bgym's native action names (click, fill, scroll, ...) with full parameter
-    schemas and descriptions. No intermediate protocol layer.
-
-    Action execution serialises the Action back to a bgym action string, converts
-    it to Python code via HighLevelActionSet.to_python_code(), and runs it with
-    execute_python_code() on the Playwright Page.
-
-    Does NOT use BrowserEnv — operates directly on a Playwright Page from a
-    PlaywrightSession.
+    Uses ``HighLevelActionSet`` for action schemas and ``execute_python_code``
+    for execution. Manages its own ``PlaywrightSession`` lifecycle.
     """
 
     def __init__(self, config: BrowsergymConfig) -> None:
