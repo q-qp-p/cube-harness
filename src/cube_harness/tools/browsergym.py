@@ -22,9 +22,8 @@ from cube.tool import ToolConfig
 from cube.tools.browser import BrowserTool
 from cube_browser_playwright.playwright_session import PlaywrightSession, PlaywrightSessionConfig
 from PIL import Image
-from playwright.sync_api import Error, Frame, Page
+from playwright.sync_api import Error, Page
 from pydantic import Field
-from termcolor import colored
 
 from cube_harness.tool import ToolWithTelemetry
 
@@ -85,18 +84,7 @@ class BrowsergymTool(ToolWithTelemetry, BrowserTool):
     def _execute_action(self, action: Action) -> Observation | StepError:
         """Serialise an Action to a bgym action string, execute it, and return the observation."""
         action_str = _action_to_bgym_string(action)
-
-        # Capture checkbox/radio state before the click so the fallback can compare
-        checkbox_state_before: bool | None = None
-        if action.name == "click" and "bid" in action.arguments:
-            checkbox_state_before = self._get_checkbox_state(action.arguments["bid"])
-
         result = self._execute_bgym_step(action_str)
-
-        # Checkbox/radio fallback for click actions
-        if checkbox_state_before is not None:
-            result = self._checkbox_fallback(action.arguments["bid"], checkbox_state_before, result)
-
         obs = self.page_obs()
         action_obs = Observation(contents=[Content.from_data(result, tool_call_id=action.id)])
         return action_obs + obs
@@ -221,93 +209,6 @@ class BrowsergymTool(ToolWithTelemetry, BrowserTool):
         self._last_reward = 0.0
         self._last_terminated = False
         return result
-
-    # === Checkbox/radio JS fallback ===
-
-    def _checkbox_fallback(self, bid: str, state_before: bool, result: str) -> str:
-        """After a click, verify checkbox/radio toggled; use JS fallback if not."""
-        state_after = self._get_checkbox_state(bid)
-        if state_after is None or state_after != state_before:
-            return result  # Element gone or state changed — click worked
-
-        # State didn't change, try JS fallback
-        self._toggle_checkbox_js(bid, not state_before)
-        state_after_js = self._get_checkbox_state(bid)
-        logger.info(colored(f"Checkbox/radio {bid} JS fallback, state: {state_after_js}", "cyan"))
-        self._execute_bgym_step("noop()")  # Update obs/info
-        return result
-
-    def _get_frame_for_bid(self, bid: str) -> Page | Frame:
-        """Navigate to the correct frame for a BID using BrowserGym's naming convention."""
-        current_frame: Page | Frame = self.page
-        i = 0
-        while i < len(bid) and not bid[i:].isnumeric():
-            i += 1
-            while i < len(bid) and bid[i].isalpha() and bid[i].isupper():
-                i += 1
-            if i > 0:
-                frame_bid = bid[:i]
-                try:
-                    frame_elem = current_frame.get_by_test_id(frame_bid)
-                    if frame_elem.count() > 0:
-                        current_frame = frame_elem.frame_locator(":scope")
-                    else:
-                        break
-                except Exception:
-                    break
-        return current_frame
-
-    def _get_checkbox_state(self, bid: str) -> bool | None:
-        """Get checkbox/radio checked state, or None if not a checkbox/radio."""
-        try:
-            frame = self._get_frame_for_bid(bid)
-            locator = frame.get_by_test_id(bid)
-            if locator.count() == 0:
-                return None
-            js_code = """
-                (elem) => {
-                    if (elem.type === 'checkbox' || elem.type === 'radio') {
-                        return { isCheckbox: true, checked: elem.checked };
-                    }
-                    if (elem.getAttribute('data-type') === 'checkbox') {
-                        return { isCheckbox: true, checked: elem.value === 'true' };
-                    }
-                    return { isCheckbox: false };
-                }
-            """
-            result = locator.evaluate(js_code)
-            if isinstance(result, dict) and result.get("isCheckbox"):
-                return result.get("checked")
-            return None
-        except Exception:
-            return None
-
-    def _toggle_checkbox_js(self, bid: str, checked: bool) -> None:
-        """Toggle checkbox state using JavaScript."""
-        try:
-            frame = self._get_frame_for_bid(bid)
-            locator = frame.get_by_test_id(bid)
-            js_code = """
-            (elem, checked) => {
-                if (elem.type === 'checkbox' || elem.type === 'radio') {
-                    elem.checked = checked;
-                    elem.dispatchEvent(new Event('click', { bubbles: true }));
-                    elem.dispatchEvent(new Event('change', { bubbles: true }));
-                    elem.dispatchEvent(new Event('input', { bubbles: true }));
-                    return true;
-                }
-                if (elem.getAttribute('data-type') === 'checkbox') {
-                    elem.value = checked ? 'true' : 'false';
-                    elem.dispatchEvent(new Event('change', { bubbles: true }));
-                    elem.dispatchEvent(new Event('input', { bubbles: true }));
-                    return true;
-                }
-                return false;
-            }
-            """
-            locator.evaluate(js_code, checked)
-        except Exception:
-            pass
 
     # === Observation extraction ===
 

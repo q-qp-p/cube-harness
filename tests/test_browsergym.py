@@ -490,7 +490,6 @@ class TestBrowsergymToolExecuteAction:
         action = Action(name="click", arguments={"bid": "a1"})
 
         with (
-            patch.object(tool, "_checkbox_fallback", return_value="Success"),
             patch.object(tool, "_execute_bgym_step", return_value="Success"),
             patch.object(tool, "page_obs", return_value=Observation()),
         ):
@@ -618,68 +617,3 @@ class TestBrowsergymToolLifecycle:
         tool = BrowsergymTool(config)
 
         tool.close()
-
-
-class TestBrowsergymToolCheckboxJsFallback:
-    """Tests for checkbox/radio JS fallback."""
-
-    def _create_tool_with_mock_page(self) -> BrowsergymTool:
-        config = BrowsergymConfig()
-        tool = BrowsergymTool(config)
-
-        mock_page = MagicMock()
-        mock_element_locator = MagicMock()
-        mock_element_locator.count.return_value = 1
-        mock_iframe_locator = MagicMock()
-        mock_iframe_locator.count.return_value = 1
-        mock_frame = MagicMock()
-        mock_frame.get_by_test_id.return_value = mock_element_locator
-        mock_iframe_locator.frame_locator.return_value = mock_frame
-        mock_page.get_by_test_id.return_value = mock_iframe_locator
-
-        mock_page._mock_element_locator = mock_element_locator
-        mock_page._mock_frame = mock_frame
-
-        tool._session = PlaywrightSession(
-            playwright=MagicMock(),
-            page=mock_page,
-            context=MagicMock(),
-            cdp_url="http://localhost:9222",
-            user_data_dir=tempfile.mkdtemp(prefix="cube_harness_"),
-        )
-        tool._last_obs = {}
-
-        return tool
-
-    def test_get_checkbox_state_returns_true_when_checked(self) -> None:
-        tool = self._create_tool_with_mock_page()
-        tool.page._mock_element_locator.evaluate.return_value = {
-            "found": True,
-            "isCheckbox": True,
-            "checked": True,
-        }
-
-        result = tool._get_checkbox_state("a123")
-
-        assert result is True
-        tool.page._mock_element_locator.evaluate.assert_called_once()
-
-    def test_get_checkbox_state_returns_false_when_unchecked(self) -> None:
-        tool = self._create_tool_with_mock_page()
-        tool.page._mock_element_locator.evaluate.return_value = {
-            "found": True,
-            "isCheckbox": True,
-            "checked": False,
-        }
-
-        result = tool._get_checkbox_state("a123")
-
-        assert result is False
-
-    def test_get_checkbox_state_returns_none_for_non_checkbox(self) -> None:
-        tool = self._create_tool_with_mock_page()
-        tool.page._mock_element_locator.evaluate.return_value = {"isCheckbox": False}
-
-        result = tool._get_checkbox_state("a123")
-
-        assert result is None
