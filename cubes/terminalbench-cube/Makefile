@@ -1,4 +1,4 @@
-.PHONY: test debug deinstall
+.PHONY: test debug install
 
 test:
 	uv run cube test terminalbench-cube
