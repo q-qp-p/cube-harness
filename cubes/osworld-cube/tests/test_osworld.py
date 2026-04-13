@@ -534,9 +534,7 @@ class TestOSWorldBenchmark:
         from osworld_cube.benchmark import OSWorldBenchmark
 
         bench = OSWorldBenchmark()
-        bench.setup()
         chrome_bench = bench.subset_from_glob("domain", "chrome")
-
         assert len(chrome_bench.task_metadata) < len(bench.task_metadata)
         assert all(tm.domain == "chrome" for tm in chrome_bench.task_metadata.values())
 
@@ -544,8 +542,6 @@ class TestOSWorldBenchmark:
         from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTaskConfig
 
         bench = OSWorldBenchmark()
-        bench.setup()
-
         configs = list(bench.get_task_configs())
         assert len(configs) == 368
         for cfg in configs:
@@ -557,8 +553,6 @@ class TestOSWorldBenchmark:
         from osworld_cube.task import OSWorldTask
 
         bench = OSWorldBenchmark()
-        bench.setup()
-
         cfg = next(bench.get_task_configs())
         fake_exec_info = {"config": [], "evaluator": {"func": "check_file"}}
         with patch.object(OSWorldBenchmark, "load_task_execution_info", return_value=fake_exec_info):
@@ -571,8 +565,6 @@ class TestOSWorldBenchmark:
         from osworld_cube.benchmark import OSWorldBenchmark
 
         bench = OSWorldBenchmark(use_som=True)
-        bench.setup()
-
         cfg = next(bench.get_task_configs())
         assert cfg.use_som is True
 
