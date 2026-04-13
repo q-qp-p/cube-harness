@@ -26,7 +26,6 @@ from cube.benchmark import RuntimeContext  # noqa: F401 — triggers OSWorldTask
 from cube.core import Observation
 from cube.task import Task, TaskMetadata
 from cube.resource import InfraConfig, ResourceHandle, VMResourceConfig
-from cube.task import Task
 
 from cube_computer_tool.axtree import linearize_accessibility_tree, tag_screenshot
 
@@ -109,6 +108,7 @@ class OSWorldTask(Task):
         metadata.extra_info["instruction"]  — used as the agent's goal text
         metadata.abstract_description       — short description of the task type (may be empty)
     """
+
     metadata: OSWorldTaskMetadata  # type: ignore[assignment] — TaskMetadata subclass with OSWorld-specific fields
 
     infra: InfraConfig | None = None

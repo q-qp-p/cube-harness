@@ -39,13 +39,9 @@ from osworld_cube.task import OSWorldTask, OSWorldTaskMetadata
 from cube import LocalInfraConfig
 from pydantic import Field
 
-from cube.benchmark import Benchmark, BenchmarkMetadata
-from cube.container import ContainerBackend
 from cube.resource import InfraConfig, ResourceConfig
-from cube.task import TaskConfig
 
-from osworld_cube.computer import ComputerConfig
-from osworld_cube.task import OSWORLD_UBUNTU_RESOURCE, OSWorldTask
+from osworld_cube.task import OSWORLD_UBUNTU_RESOURCE
 
 
 logger = logging.getLogger(__name__)
@@ -111,6 +107,7 @@ class OSWorldTaskConfig(TaskConfig):
         use_som:     Passed by OSWorldBenchmark
         infra:       InfraConfig to use for this task.
     """
+
     use_som: bool = False
     infra: InfraConfig | None = None
 

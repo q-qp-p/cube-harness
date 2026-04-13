@@ -15,7 +15,6 @@ from PIL import Image
 from cube import LocalInfraConfig
 from cube.core import Action, Observation, TextContent
 from cube.resource import InfraConfig, ResourceHandle
-from cube.task import TaskMetadata
 
 # ---------------------------------------------------------------------------
 # Patch targets — pointing at cube_computer_tool and osworld_cube.task
@@ -533,7 +532,6 @@ class TestOSWorldBenchmark:
 
     def test_domain_filter_via_subset_from_glob(self) -> None:
         from osworld_cube.benchmark import OSWorldBenchmark
-        from osworld_cube.computer import ComputerConfig
 
         bench = OSWorldBenchmark()
         bench.setup()

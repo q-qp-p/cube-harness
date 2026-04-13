@@ -28,14 +28,11 @@ from cube.benchmark import Benchmark
 from cube.container import ContainerBackend
 from cube.core import Action, ActionSchema, Observation
 from cube.task import TaskConfig
-from cube.vm import VMBackend
 from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTaskConfig
 from osworld_cube.task import OSWorldTask, OSWorldTaskMetadata
 
 from cube import LocalInfraConfig
-from cube.core import Action, ActionSchema, Observation
 from cube.resource import InfraConfig
-from osworld_cube.benchmark import OSWorldBenchmark
 from osworld_cube.computer import ComputerConfig
 from osworld_cube.infra_loader import load_runtime_infra_from_config_file
 
