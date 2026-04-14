@@ -36,10 +36,7 @@ class BrowsergymConfig(ToolConfig):
     # Browser configuration (launch parameters)
     browser: PlaywrightSessionConfig = Field(default_factory=PlaywrightSessionConfig)
 
-    # Action configuration — pure browser actions only.
-    # Chat ("send_msg_to_user") and infeasibility ("report_infeasible") are handled
-    # by ChatTool when used in a Toolbox. Add "chat"/"infeas" here only if running
-    # standalone without a ChatTool.
+    # Action configuration
     action_subsets: list[str] = Field(default=["bid", "nav", "tab"])
 
     # Observation behavior
@@ -66,13 +63,6 @@ class BrowsergymTool(ToolWithTelemetry, BrowserTool):
     def __init__(self, config: BrowsergymConfig) -> None:
         super().__init__()
         self.config = config
-        deprecated_subsets = {"chat", "infeas"} & set(config.action_subsets)
-        if deprecated_subsets:
-            logger.warning(
-                f"BrowsergymTool action_subsets includes {deprecated_subsets}. "
-                "Chat and infeasibility actions should be handled by ChatTool in a Toolbox. "
-                "Messages sent via bgym's send_msg_to_user will NOT be routed to ChatSession."
-            )
         self._action_set = HighLevelActionSet(subsets=config.action_subsets, multiaction=False)
         self._action_schemas: list[ActionSchema] | None = None
         self._session: PlaywrightSession | None = None
@@ -188,28 +178,22 @@ class BrowsergymTool(ToolWithTelemetry, BrowserTool):
         """
         logger.info(f"Execute bgym step: {action_str}")
         result = "Success"
-        infeasible_messages: list[str] = []
-        user_messages: list[str] = []
+
+        def send_message_to_user(_: str) -> None:
+            assert False, "send_message_to_user should not be called"
+
+        def report_infeasible_instructions(_: str) -> None:
+            assert False, "report_infeasible_instructions should not be called"
 
         try:
             code = self._action_set.to_python_code(action_str)
             execute_python_code(
                 code=code,
                 page=self.page,
-                send_message_to_user=lambda message: user_messages.append(message),
-                report_infeasible_instructions=lambda message: infeasible_messages.append(message),
+                send_message_to_user=send_message_to_user,
+                report_infeasible_instructions=report_infeasible_instructions,
             )
-            if infeasible_messages:
-                error_msg = "; ".join(infeasible_messages)
-                self._last_info = {"source": "action", "action": action_str, "action_error": error_msg}
-                result = f"Failed (infeasible): {error_msg}"
-            else:
-                self._last_info = {
-                    "source": "action",
-                    "action": action_str,
-                    "action_error": "",
-                    "user_messages": user_messages,
-                }
+            self._last_info = {"source": "action", "action": action_str, "action_error": ""}
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
             self._last_info = {"source": "action", "action": action_str, "action_error": error_msg}
