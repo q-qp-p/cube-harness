@@ -107,6 +107,10 @@ def main(debug: bool) -> None:
     benchmark.setup()
     benchmark = benchmark.named_subset("test_small")
 
+    # Provision all resources the benchmark needs (idempotent — no-ops if already ready).
+    for resource in benchmark.resources:
+        INFRA.provision(resource)
+
     exp = Experiment(
         name="osworld_azure_gpt5_mini",
         output_dir=output_dir,
