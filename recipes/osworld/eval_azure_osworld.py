@@ -22,7 +22,6 @@ from cube_infra_azure import AzureInfraConfig
 from dotenv import load_dotenv
 from osworld_cube.benchmark import OSWorldBenchmark
 from osworld_cube.computer import ComputerConfig
-from osworld_cube.debug import DebugOSWorldBenchmark
 
 from cube_harness import make_experiment_output_dir
 from cube_harness.agents.genny import GennyConfig
@@ -100,22 +99,13 @@ def main(debug: bool) -> None:
         observe_after_action=True,
     )
 
-    if debug:
-        benchmark = DebugOSWorldBenchmark(
-            default_tool_config=tool_config,
-            use_som=False,
-            infra=INFRA,
-        )
-    else:
-        benchmark = OSWorldBenchmark(
-            default_tool_config=tool_config,
-            use_som=False,
-            infra=INFRA,
-        )
+    benchmark = OSWorldBenchmark(
+        default_tool_config=tool_config,
+        use_som=False,
+        infra=INFRA,
+    )
     benchmark.setup()
-
-    if not debug:
-        benchmark = benchmark.named_subset("test_small")
+    benchmark = benchmark.named_subset("test_small")
 
     exp = Experiment(
         name="osworld_azure_gpt5_mini",
@@ -128,7 +118,7 @@ def main(debug: bool) -> None:
     try:
         if debug:
             print("\n" + "=" * 60)
-            print("DEBUG MODE: Running debug_tasks.json sequentially on Azure")
+            print("DEBUG MODE: Running test_small sequentially on Azure")
             print("=" * 60)
             print(f"Output directory: {output_dir}")
             print(f"Model: {llm_config.model_name}")

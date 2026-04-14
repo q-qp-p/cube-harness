@@ -23,7 +23,6 @@ import sys
 
 from osworld_cube.benchmark import OSWorldBenchmark
 from osworld_cube.computer import ComputerConfig
-from osworld_cube.debug import DebugOSWorldBenchmark
 
 from cube_harness import make_experiment_output_dir
 from cube_harness.agents.genny import GennyConfig
@@ -87,18 +86,12 @@ def main(debug: bool) -> None:
         observe_after_action=True,
     )
 
-    if debug:
-        benchmark = DebugOSWorldBenchmark(
-            default_tool_config=tool_config,
-            use_som=False,
-        )
-    else:
-        benchmark = OSWorldBenchmark(
-            default_tool_config=tool_config,
-            use_som=False,
-        )
-        benchmark.setup()
-        benchmark = benchmark.named_subset("test_small")
+    benchmark = OSWorldBenchmark(
+        default_tool_config=tool_config,
+        use_som=False,
+    )
+    benchmark.setup()
+    benchmark = benchmark.named_subset("test_small")
 
     exp = Experiment(
         name="osworld_genny_gpt5",
@@ -110,7 +103,7 @@ def main(debug: bool) -> None:
 
     if debug:
         print("\n" + "=" * 60)
-        print("DEBUG MODE: Running debug_tasks.json sequentially")
+        print("DEBUG MODE: Running test_small sequentially")
         print("=" * 60)
         print(f"Output directory: {output_dir}")
         print(f"Model: {llm_config.model_name}")
