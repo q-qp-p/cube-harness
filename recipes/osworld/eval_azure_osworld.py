@@ -17,13 +17,12 @@ Usage:
 import logging
 import os
 import sys
-from pathlib import Path
 
-import osworld_cube
 from cube_infra_azure import AzureInfraConfig
 from dotenv import load_dotenv
-from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTestSet
+from osworld_cube.benchmark import OSWorldBenchmark
 from osworld_cube.computer import ComputerConfig
+from osworld_cube.debug import DebugOSWorldBenchmark
 
 from cube_harness import make_experiment_output_dir
 from cube_harness.agents.genny import GennyConfig
@@ -101,19 +100,22 @@ def main(debug: bool) -> None:
         observe_after_action=True,
     )
 
-    tasks_file = str(Path(osworld_cube.__file__).parent / "debug_tasks.json") if debug else None
-    benchmark = OSWorldBenchmark(
-        default_tool_config=tool_config,
-        use_som=False,
-        tasks_file=tasks_file,
-        test_set_name=OSWorldTestSet.TEST_SMALL,
-        infra=INFRA,
-    )
+    if debug:
+        benchmark = DebugOSWorldBenchmark(
+            default_tool_config=tool_config,
+            use_som=False,
+            infra=INFRA,
+        )
+    else:
+        benchmark = OSWorldBenchmark(
+            default_tool_config=tool_config,
+            use_som=False,
+            infra=INFRA,
+        )
     benchmark.setup()
 
-    # Provision all resources the benchmark needs (idempotent — no-ops if already ready).
-    for resource in benchmark.resources:
-        INFRA.provision(resource)
+    if not debug:
+        benchmark = benchmark.named_subset("test_small")
 
     exp = Experiment(
         name="osworld_azure_gpt5_mini",

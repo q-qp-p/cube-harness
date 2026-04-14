@@ -21,8 +21,9 @@ Usage:
 
 import sys
 
-from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTestSet
+from osworld_cube.benchmark import OSWorldBenchmark
 from osworld_cube.computer import ComputerConfig
+from osworld_cube.debug import DebugOSWorldBenchmark
 from osworld_cube.vm_backend import OSWorldQEMUVMBackend
 
 from cube_harness import make_experiment_output_dir
@@ -87,15 +88,20 @@ def main(debug: bool) -> None:
         observe_after_action=True,
     )
 
-    # tasks_file = str(Path(osworld_cube.__file__).parent / "debug_tasks.json") if debug else None
-    tasks_file = None  # Use all tasks in both debug and eval modes
-    benchmark = OSWorldBenchmark(
-        default_tool_config=tool_config,
-        use_som=False,
-        tasks_file=tasks_file,
-        test_set_name=OSWorldTestSet.TEST_SMALL,
-        vm_backend=OSWorldQEMUVMBackend(),
-    )
+    if debug:
+        benchmark = DebugOSWorldBenchmark(
+            default_tool_config=tool_config,
+            use_som=False,
+            infra=OSWorldQEMUVMBackend(),
+        )
+    else:
+        benchmark = OSWorldBenchmark(
+            default_tool_config=tool_config,
+            use_som=False,
+            infra=OSWorldQEMUVMBackend(),
+        )
+        benchmark.setup()
+        benchmark = benchmark.named_subset("test_small")
 
     exp = Experiment(
         name="osworld_genny_gpt5",
