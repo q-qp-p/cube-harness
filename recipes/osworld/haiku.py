@@ -27,7 +27,6 @@ from datetime import datetime
 from osworld_cube.benchmark import OSWorldBenchmark
 from osworld_cube.computer import ComputerConfig
 from osworld_cube.debug import DebugOSWorldBenchmark
-from osworld_cube.vm_backend import OSWorldQEMUVMBackend
 
 from cube_harness import make_experiment_output_dir
 from cube_harness.agents.genny import GennyConfig
@@ -125,14 +124,12 @@ def main(debug: bool) -> None:
         benchmark = DebugOSWorldBenchmark(
             default_tool_config=tool_config,
             use_som=False,
-            infra=OSWorldQEMUVMBackend(),
         )
         benchmark.setup()
     else:
         benchmark = OSWorldBenchmark(
             default_tool_config=tool_config,
             use_som=False,
-            infra=OSWorldQEMUVMBackend(),
         )
         benchmark.setup()
         benchmark = benchmark.named_subset("test_small")
