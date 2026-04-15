@@ -2,7 +2,7 @@ import logging
 import urllib.error
 import urllib.request
 from collections.abc import Generator
-from typing import ClassVar, override
+from typing import ClassVar
 
 from cube.benchmark import Benchmark, BenchmarkMetadata
 from cube.task import TaskConfig
