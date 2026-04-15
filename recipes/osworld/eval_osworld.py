@@ -1,4 +1,4 @@
-"""OSWorld Eval — Genny agent with GPT-5 and accessibility tree observations.
+"""OSWorld Eval — Genny agent with GPT-5-mini and accessibility tree observations.
 
 Uses the Genny agent (explicit context management, rolling summaries) with
 the linearized accessibility tree for element coordinates, without screenshots
@@ -9,11 +9,11 @@ Prerequisites:
     The OSWorld repo is cloned on first install to populate per-task execution cache files.
 
 Usage:
-    # Debug mode (embedded debug benchmark, sequential)
-    uv run recipes/eval_osworld.py debug
+    # Debug mode (test_small subset, sequential)
+    uv run recipes/osworld/eval_osworld.py debug
 
     # Eval mode (test_small subset, 3 workers)
-    uv run recipes/eval_osworld.py
+    uv run recipes/osworld/eval_osworld.py
 """
 
 import sys

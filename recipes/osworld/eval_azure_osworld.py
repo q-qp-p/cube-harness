@@ -1,4 +1,4 @@
-"""OSWorld eval on Azure — Genny agent with GPT-5 and accessibility tree observations.
+"""OSWorld eval on Azure — Genny agent with GPT-5-mini and accessibility tree observations.
 
 Uses AzureInfraConfig to launch fresh VMs per task. Mirrors the non-Azure
 OSWorld recipe configuration while using Azure-backed VM provisioning.
