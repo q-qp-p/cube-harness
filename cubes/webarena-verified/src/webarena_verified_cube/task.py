@@ -132,7 +132,7 @@ class WebArenaVerifiedTaskConfig(TaskConfig):
         # Import here to avoid circular import (benchmark imports task)
         from webarena_verified_cube.benchmark import WebArenaVerifiedBenchmark
 
-        wav = WebArenaVerified()
+        wav = WebArenaVerified(config=self.wav_config)
         wav_task = wav.get_task(int(self.task_id))
         metadata = WebArenaVerifiedBenchmark.task_metadata[self.task_id]
         return WebArenaVerifiedTask(
