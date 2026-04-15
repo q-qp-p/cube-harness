@@ -48,7 +48,7 @@ WEBARENA_SHOPPING = DockerServiceConfig(
     scope="benchmark",
     docker_images=["am1n3e/webarena-verified-shopping"],
     services={
-        "shopping": 7770,       # web UI  (container port 80)
+        "shopping": 7770,  # web UI  (container port 80)
         "shopping_ctrl": 7771,  # env-ctrl (container port 8877)
     },
     endpoint_to_site={"shopping": "shopping"},
@@ -62,7 +62,7 @@ WEBARENA_REDDIT = DockerServiceConfig(
     scope="benchmark",
     docker_images=["am1n3e/webarena-verified-reddit"],
     services={
-        "reddit": 9999,       # web UI  (container port 80)
+        "reddit": 9999,  # web UI  (container port 80)
         "reddit_ctrl": 9998,  # env-ctrl (container port 8877)
     },
     endpoint_to_site={"reddit": "reddit"},
@@ -76,7 +76,7 @@ WEBARENA_GITLAB = DockerServiceConfig(
     scope="benchmark",
     docker_images=["am1n3e/webarena-verified-gitlab"],
     services={
-        "gitlab": 8023,       # web UI  (container port 8023)
+        "gitlab": 8023,  # web UI  (container port 8023)
         "gitlab_ctrl": 8024,  # env-ctrl (container port 8877)
     },
     endpoint_to_site={"gitlab": "gitlab"},
@@ -91,7 +91,7 @@ WEBARENA_WIKIPEDIA = DockerServiceConfig(
     scope="benchmark",
     docker_images=["am1n3e/webarena-verified-wikipedia"],
     services={
-        "wikipedia": 8888,       # web UI  (container port 8080)
+        "wikipedia": 8888,  # web UI  (container port 8080)
         "wikipedia_ctrl": 8889,  # env-ctrl (container port 8874)
     },
     volumes=[
@@ -115,7 +115,7 @@ WEBARENA_MAP = DockerServiceConfig(
     scope="benchmark",
     docker_images=["am1n3e/webarena-verified-map"],
     services={
-        "map": 3000,       # web UI  (container port 8080)
+        "map": 3000,  # web UI  (container port 8080)
         "map_ctrl": 3001,  # env-ctrl (container port 8877)
     },
     volumes=[
