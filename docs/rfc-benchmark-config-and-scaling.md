@@ -126,41 +126,75 @@ WorkArena (ServiceNow) and WebArena degrade under load — roughly 7 concurrent 
 
 ### Design
 
-`BenchmarkPool` accepts one `BenchmarkConfig` and calls `config.make(infra)` N times, each targeting a different server. A Ray Actor tracks active agent counts per instance and assigns incoming tasks to the least-loaded one.
+`BenchmarkPool` accepts one `BenchmarkConfig` and calls `config.make(infra)` N times, each targeting a different server. A Ray Actor encapsulates active agent counts per instance and assigns incoming tasks to the least-loaded one.
 
 ```python
-class BenchmarkPool:
-    def __init__(
-        self,
-        config: BenchmarkConfig,
-        infra: InfraConfig,
-        n_servers: int,
-    ):
+class BenchmarkPool(Benchmark):
+    def __init__(self, config: BenchmarkConfig, infra: InfraConfig, n_servers: int):
         # config.make(infra) is called n_servers times.
-        # Each call provisions/launches a separate L2 resource (e.g. a different
-        # ServiceNow instance from a pool) and returns a live Benchmark.
-        self._benchmarks: list[Benchmark] = [config.make(infra) for _ in range(n_servers)]
-        self._dispatcher = LoadBalancerActor.remote(n_servers)
+        # Each call provisions/launches a separate L2 resource (a different server
+        # endpoint) and returns a live Benchmark.
+        self._benchmarks = [config.make(infra) for _ in range(n_servers)]
+        # Actor handle is serializable — Ray workers can call it from any process.
+        self._actor = LoadBalancerActor.remote(n_servers)
 ```
 
-`BenchmarkConfig.make()` is the key: without it, there is no clean way to instantiate N identical benchmarks from one config. `InfraConfig` is responsible for handing out N distinct server endpoints when called N times (e.g. it maintains a pool of pre-provisioned ServiceNow instances).
+`BenchmarkConfig.make()` is the key: without it there is no clean way to instantiate N identical benchmarks from one config. `InfraConfig` is responsible for handing out N distinct server endpoints on successive `make()` calls (e.g. from a pool of pre-provisioned ServiceNow instances).
 
-### Task dispatch
+### Task dispatch via `_runtime_context_for()`
 
-A Ray Actor tracks active counts per instance:
+**The server assignment must happen at task execution time**, not at episode creation time. Today `Experiment._create_all_episodes()` bakes `benchmark._runtime_context` into each `Episode` upfront. For `BenchmarkPool` that would freeze every task to the same server before any worker runs.
+
+The fix is a small protocol extension: `Episode.run()` calls `benchmark._runtime_context_for(task_config)` lazily — on the Ray worker, at the moment the task is about to start — instead of reading a pre-baked context dict:
+
+```python
+# Episode.run() — new behavior
+ctx = self.benchmark._runtime_context_for(self.task_config)  # lazy, blocking
+try:
+    task = self.task_config.make(runtime_context=ctx, ...)
+    ...
+finally:
+    self.benchmark._release_context(ctx)
+```
+
+The default `Benchmark` implementation just returns `self._runtime_context` (unchanged behavior). `BenchmarkPool` overrides it:
+
+```python
+class BenchmarkPool(Benchmark):
+    def _runtime_context_for(self, task_config: TaskConfig) -> RuntimeContext:
+        # Blocks until the least-loaded server has a free slot.
+        # The actor handle is serializable, so this works from any Ray worker.
+        idx = ray.get(self._actor.acquire.remote())
+        return {**self._benchmarks[idx]._runtime_context, "_pool_slot": idx}
+
+    def _release_context(self, ctx: RuntimeContext) -> None:
+        ray.get(self._actor.release.remote(ctx["_pool_slot"]))
+```
+
+The `LoadBalancerActor` is an **implementation detail fully encapsulated inside `BenchmarkPool`**. `Episode` and Ray workers never call it directly — they only interact through the `_runtime_context_for` / `_release_context` protocol on `Benchmark`.
 
 ```python
 @ray.remote
 class LoadBalancerActor:
-    def acquire(self) -> int:
-        """Return the index of the least-loaded instance. Block if all full."""
-        ...
+    def __init__(self, n_servers: int, max_per_server: int):
+        self._active = [0] * n_servers
+        self._max = max_per_server
 
-    def release(self, index: int) -> None:
-        ...
+    def acquire(self) -> int:
+        """Block until a slot is free; return the least-loaded server index."""
+        while True:
+            candidates = [i for i, c in enumerate(self._active) if c < self._max]
+            if candidates:
+                idx = min(candidates, key=lambda i: self._active[i])
+                self._active[idx] += 1
+                return idx
+            time.sleep(0.1)   # or use async actor pattern to avoid spinning
+
+    def release(self, idx: int) -> None:
+        self._active[idx] -= 1
 ```
 
-Each Ray worker acquires a slot before running an episode, then releases it when done. The `runtime_context` for the episode comes from `self._benchmarks[index]._runtime_context`.
+Ray Actors process calls one at a time (serialized), so `acquire()` / `release()` are race-free with no additional locking.
 
 ### Usage
 
