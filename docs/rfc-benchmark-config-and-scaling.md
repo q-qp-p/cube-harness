@@ -98,33 +98,32 @@ WorkArena (ServiceNow) and WebArena support limited concurrency per server (~7 a
 
 ### Design
 
-`BenchmarkPoolConfig` wraps one `BenchmarkConfig` and instantiates it N times via `config.make(infra)`, each targeting a different server. `BenchmarkConfig.make()` is what makes this possible — without it there is no clean way to create N identical benchmarks from one config.
+`BenchmarkPool` is a concrete class that takes a `BenchmarkConfig` and `n_servers`. It calls `config.make(infra)` N times, provisioning N independent L2 resources (e.g. one ServiceNow instance per slot). `BenchmarkConfig.make()` is what makes this clean — calling it N times naturally yields N independent servers.
 
-**Server assignment must happen at task execution time**, not at episode creation time. If contexts are baked into episodes upfront, all workers hit the same server.
+```python
+pool = BenchmarkPool(
+    config=WorkArenaBenchmarkConfig().named_subset("l1"),
+    n_servers=3,
+)
+exp = Experiment(name="workarena-l1", benchmark=pool.make(azure_infra), ...)
+run_with_ray(exp, n_cpus=21)    # 3 servers × 7 agents each
+```
 
-The solution is a Ray Actor acting as a cross-process semaphore. The main process dispatches all N tasks to Ray immediately (non-blocking, Ray's scheduler is unaffected). Each Ray worker blocks on `actor.acquire()` just before running its task, receives a `RuntimeContext` dict for a free server slot, runs the task, then calls `actor.release()`.
+`BenchmarkPool` is not a `BenchmarkConfig` subclass — it is a thin execution wrapper. The config stays infra-agnostic; `n_servers` is an execution decision made at construction time.
+
+### Load balancing via Ray Actor
+
+**Server assignment must happen at task execution time**, not at episode creation time. If contexts are baked into episodes upfront, all workers end up on the same server.
+
+A Ray Actor acts as a cross-process semaphore. The main process dispatches all N tasks to Ray immediately (non-blocking — Ray's scheduler is unaffected). Each worker blocks on `actor.acquire()` just before running its task, receives the `RuntimeContext` dict for a free server slot, runs the task, then calls `actor.release()`.
 
 ```
 Main process:  dispatch all N tasks at once (non-blocking)
                         ↓
-Ray workers:   block on actor.acquire() → get RuntimeContext → run task → actor.release()
+Ray workers:   actor.acquire() → RuntimeContext dict → run task → actor.release()
 ```
 
-`Benchmark` instances stay in the main process and are never serialized to Ray workers. Only `RuntimeContext` dicts (plain dicts) cross the process boundary — which is all `task_config.make(runtime_context=ctx)` needs. The actor handle itself is serializable by Ray design.
-
-### Where does `n_servers` live?
-
-`n_servers` is infrastructure, not configuration — the same `BenchmarkConfig` should work on a laptop (1 server) or a cluster (10 servers) without modification. It should **not** live on `BenchmarkConfig`.
-
-The natural home is `make()`:
-
-```python
-config = WorkArenaBenchmarkConfig().named_subset("l1")
-benchmark = config.make(infra, n_servers=3)  # returns BenchmarkPool
-benchmark = config.make(infra)               # single server (default)
-```
-
-How to express per-sub-benchmark `n_servers` in a `CompositeBenchmark` is an open question, likely tied to a future `InfraConfig` design. Out of scope for this RFC.
+`Benchmark` instances stay in the main process and are never serialized to workers. Only `RuntimeContext` dicts (plain dicts) cross the process boundary — which is all `task_config.make(runtime_context=ctx)` needs. The actor handle is serializable by Ray design, so workers can reach it from any process.
 
 ---
 
