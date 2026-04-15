@@ -1,11 +1,43 @@
 """WorkArena-specific tools for tasks that may be unsolvable or require cheating."""
 
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from browsergym.workarena.tasks.base import AbstractServiceNowTask
+from cube.core import Observation
 from cube.tool import Tool, ToolConfig, tool_action
 from cube_browser_playwright import PlaywrightSession
 from cube_browser_tool import PlaywrightConfig, SyncPlaywrightTool
+from cube_browser_playwright import PlaywrightSessionConfig
+from playwright.sync_api import Page
+
+
+@runtime_checkable
+class WorkarenaBrowserToolConfig(Protocol):
+    """
+    Protocol for browser tool configs used by WorkArenaTask — requires a `browser` attribute and a `make()` method.
+    Both BrowsergymConfig and PlaywrightConfig satisfy this protocol, so WorkArenaTask can work with either.
+    """
+
+    browser: PlaywrightSessionConfig
+
+    def make(self, container: Any = None) -> "WorkArenaBrowserTool": ...
+
+
+@runtime_checkable
+class WorkArenaBrowserTool(Protocol):
+    """
+    Protocol for browser tools used by WorkArena tasks — requires a Playwright `page` attribute.
+    Both BrowsergymTool and SyncPlaywrightTool satisfy this protocol, so WorkArenaTask can work with either.
+    """
+
+    config: WorkarenaBrowserToolConfig
+
+    @property
+    def page(self) -> Page: ...
+
+    def noop(self) -> Any: ...
+
+    def page_obs(self) -> Observation: ...
 
 
 class WorkArenaInfeasibleTool(Tool):

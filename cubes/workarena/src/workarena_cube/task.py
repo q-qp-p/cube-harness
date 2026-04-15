@@ -3,7 +3,7 @@
 import importlib
 import logging
 import time
-from typing import Any, List, Protocol, override, runtime_checkable
+from typing import Any, List, override
 
 from browsergym.workarena.tasks.base import AbstractServiceNowTask
 from cube.benchmark import RuntimeContext
@@ -12,42 +12,14 @@ from cube.core import Action, ActionSchema, EnvironmentOutput, Observation
 from cube.task import Task, TaskConfig
 from cube.tool import Toolbox
 from cube.tools.browser import BrowserTool
-from cube_browser_playwright import PlaywrightSessionConfig, Viewport
+from cube_browser_playwright import Viewport
 from cube_chat_tool import ChatTool
-from playwright.sync_api import Page
-from workarena_cube.tools import WorkArenaCheatTool, WorkArenaInfeasibleTool
+from workarena_cube.tools import WorkArenaCheatTool, WorkArenaInfeasibleTool, WorkArenaBrowserTool
 from pydantic import PrivateAttr
+
 
 logger = logging.getLogger(__name__)
 
-
-@runtime_checkable
-class WorkarenaBrowserToolConfig(Protocol):
-    """
-    Protocol for browser tool configs used by WorkArenaTask — requires a `browser` attribute and a `make()` method.
-    Both BrowsergymConfig and PlaywrightConfig satisfy this protocol, so WorkArenaTask can work with either.
-    """
-
-    browser: PlaywrightSessionConfig
-
-    def make(self, container: Any = None) -> "WorkArenaBrowserTool": ...
-
-
-@runtime_checkable
-class WorkArenaBrowserTool(Protocol):
-    """
-    Protocol for browser tools used by WorkArena tasks — requires a Playwright `page` attribute.
-    Both BrowsergymTool and SyncPlaywrightTool satisfy this protocol, so WorkArenaTask can work with either.
-    """
-
-    config: WorkarenaBrowserToolConfig
-
-    @property
-    def page(self) -> Page: ...
-
-    def noop(self) -> Any: ...
-
-    def page_obs(self) -> Observation: ...
 
 
 class WorkArenaTask(Task):
