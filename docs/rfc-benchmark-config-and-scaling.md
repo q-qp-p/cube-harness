@@ -92,10 +92,10 @@ def make(self, infra_config: InfraConfig | None = None) -> "Benchmark":
         for resource in self.resources:
             if infra_config.provision_status(resource) == "needs_provisioning":
                 infra_config.provision(resource)          # L1: idempotent image provisioning
-    benchmark = self._instantiate(infra_config)           # subclass hook
-    benchmark.setup()
-    return benchmark
+    return self._instantiate(infra_config)                # Benchmark is ready on return
 ```
+
+`_instantiate()` constructs the `Benchmark`, which calls `_setup()` automatically in `model_post_init`. **`Benchmark.setup()` is not a public method** — a `Benchmark` is always born ready to use. There is no state where a `Benchmark` exists but hasn't been initialized. This eliminates the current footgun of constructing a benchmark and forgetting to call `.setup()`.
 
 `infra_config=None` is valid for self-contained benchmarks (MiniWob starts its own HTTP server, no external deps).
 
@@ -314,7 +314,7 @@ Once these merge, per-cube migration to `BenchmarkConfig` is purely mechanical f
    It belongs in cube-standard (same layer as `TaskConfig`). `BenchmarkPool` and `CompositeBenchmark` are harness-specific.
 
 2. **Backwards compatibility for `Benchmark.setup()`**  
-   Current recipes call `benchmark.setup()` directly. Transition path: keep `Benchmark.setup()` working as today for 1–2 releases, deprecate it in favor of `config.make(infra)`.
+   `setup()` becomes an implementation detail — called automatically in `model_post_init`, not exposed publicly. Current recipes that call `benchmark.setup()` explicitly need to migrate to `config.make(infra)`. Transition path: deprecate public `setup()` for 1–2 releases before removal.
 
 3. **`InfraConfig` in `make()` vs passed at experiment time**  
    Should `infra_config` be passed to `make()` or stored on the config? Passing at `make()` is cleaner — the config describes *what*, not *where* to run it.
