@@ -108,7 +108,8 @@ class WebArenaVerifiedBenchmark(Benchmark):
                 f"{[r.name for r in docker_resources]}. "
                 "Pass exactly one DockerServiceConfig in resources=."
             )
-        resource = docker_resources[0]
+        # Unpack the single validated item — tuple unpacking enforces the invariant at runtime.
+        (resource,) = docker_resources
 
         if self.infra.provision_status(resource) == "needs_provisioning":
             logger.info("Provisioning %r on %s …", resource.name, self.infra.fingerprint())
