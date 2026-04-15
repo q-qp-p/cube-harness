@@ -33,7 +33,7 @@ WEBARENA_SHOPPING_ADMIN = DockerServiceConfig(
     scope="benchmark",
     docker_images=["am1n3e/webarena-verified-shopping_admin"],
     services={
-        "shopping_admin": 7780,       # web UI  (container port 80)
+        "shopping_admin": 7780,  # web UI  (container port 80)
         "shopping_admin_ctrl": 7781,  # env-ctrl (container port 8877)
     },
     endpoint_to_site={
