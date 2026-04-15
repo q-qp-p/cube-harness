@@ -112,16 +112,19 @@ Ray workers:   block on actor.acquire() → get RuntimeContext → run task → 
 
 `Benchmark` instances stay in the main process and are never serialized to Ray workers. Only `RuntimeContext` dicts (plain dicts) cross the process boundary — which is all `task_config.make(runtime_context=ctx)` needs. The actor handle itself is serializable by Ray design.
 
-### Usage
+### Where does `n_servers` live?
+
+`n_servers` is infrastructure, not configuration — the same `BenchmarkConfig` should work on a laptop (1 server) or a cluster (10 servers) without modification. It should **not** live on `BenchmarkConfig`.
+
+The natural home is `make()`:
 
 ```python
-pool = BenchmarkPoolConfig(
-    config=WorkArenaBenchmarkConfig().named_subset("l1"),
-    n_servers=3,
-)
-exp = Experiment(name="workarena-l1", benchmark=pool.make(azure_infra), ...)
-run_with_ray(exp, n_cpus=21)    # 3 servers × 7 agents each
+config = WorkArenaBenchmarkConfig().named_subset("l1")
+benchmark = config.make(infra, n_servers=3)  # returns BenchmarkPool
+benchmark = config.make(infra)               # single server (default)
 ```
+
+How to express per-sub-benchmark `n_servers` in a `CompositeBenchmark` is an open question, likely tied to a future `InfraConfig` design. Out of scope for this RFC.
 
 ---
 
@@ -149,4 +152,7 @@ Per-cube migration is mechanical for all benchmarks whose `task_metadata` is alr
    Passing at `make()` is cleaner — the config describes *what*, the infra describes *where*.
 
 4. **How does `run_with_ray` detect a pool?**  
-   Two options: (a) check `isinstance(benchmark, BenchmarkPool)` and pass the actor handle explicitly, or (b) a `prepare_runner(run_episode_fn)` hook on `Benchmark` that lets the pool wrap the function transparently. Option (b) is cleaner but adds abstraction.
+   Two options: (a) check `isinstance(benchmark, BenchmarkPool)` and pass the actor handle explicitly to `run_episode`, or (b) a hook on `Benchmark` that lets the pool wrap the Ray function transparently. Option (b) is cleaner but adds abstraction.
+
+5. **Per-sub-benchmark `n_servers` in `CompositeBenchmark`**  
+   Out of scope for now. Likely resolved by a future `InfraConfig` design where infra describes available resources per benchmark type.
