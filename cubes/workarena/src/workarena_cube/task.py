@@ -3,7 +3,7 @@
 import importlib
 import logging
 import time
-from typing import Any, List, Protocol, override, runtime_checkable
+from typing import Any, List, override
 
 from browsergym.workarena.tasks.base import AbstractServiceNowTask
 from cube.benchmark import RuntimeContext
@@ -12,42 +12,13 @@ from cube.core import Action, ActionSchema, EnvironmentOutput, Observation
 from cube.task import Task, TaskConfig
 from cube.tool import Toolbox
 from cube.tools.browser import BrowserTool
-from cube_browser_playwright import PlaywrightSessionConfig, Viewport
+from cube_browser_playwright import Viewport
 from cube_chat_tool import ChatTool
-from playwright.sync_api import Page
-from workarena_cube.tools import WorkArenaCheatTool, WorkArenaInfeasibleTool
+from workarena_cube.tools import WorkArenaCheatTool, WorkArenaInfeasibleTool, WorkArenaBrowserTool
 from pydantic import PrivateAttr
 
+
 logger = logging.getLogger(__name__)
-
-
-@runtime_checkable
-class WorkarenaBrowserToolConfig(Protocol):
-    """
-    Protocol for browser tool configs used by WorkArenaTask — requires a `browser` attribute and a `make()` method.
-    Both BrowsergymConfig and PlaywrightConfig satisfy this protocol, so WorkArenaTask can work with either.
-    """
-
-    browser: PlaywrightSessionConfig
-
-    def make(self, container: Any = None) -> "WorkArenaBrowserTool": ...
-
-
-@runtime_checkable
-class WorkArenaBrowserTool(Protocol):
-    """
-    Protocol for browser tools used by WorkArena tasks — requires a Playwright `page` attribute.
-    Both BrowsergymTool and SyncPlaywrightTool satisfy this protocol, so WorkArenaTask can work with either.
-    """
-
-    config: WorkarenaBrowserToolConfig
-
-    @property
-    def page(self) -> Page: ...
-
-    def noop(self) -> Any: ...
-
-    def page_obs(self) -> Observation: ...
 
 
 class WorkArenaTask(Task):
@@ -79,7 +50,7 @@ class WorkArenaTask(Task):
     def _chat_tool(self) -> ChatTool | None:
         """Return the ChatTool if present in a Toolbox, else None."""
         if isinstance(self.tool, Toolbox):
-            return self.tool.find_tool(ChatTool)
+            return self.tool.find_tool(ChatTool)  # type: ignore
         return None
 
     @property
@@ -94,11 +65,13 @@ class WorkArenaTask(Task):
         """Instantiate and set up the WorkArena task, returning the initial observation."""
         task_class = _load_task_class(self.metadata.extra_info["task_class_path"])
         self._workarena_task = task_class(seed=self.seed)
+        if self._workarena_task is None:
+            raise RuntimeError("Failed to initialize WorkArena task.")
         _apply_task_runtime_preferences(self._browser_tool, self._workarena_task)
-        if isinstance(self._browser_tool, WorkArenaCheatTool):
-            self._browser_tool._workarena_task = self._workarena_task
         self.tool.reset()
         self._validate_cache = None
+        if isinstance(self._browser_tool, WorkArenaCheatTool):
+            self._browser_tool._workarena_task = self._workarena_task
         page = self._browser_tool.page
         goal, task_info = self._workarena_task.setup(page)
 
@@ -127,9 +100,20 @@ class WorkArenaTask(Task):
 
     @property
     def _chat_messages(self) -> list[dict]:
-        """Return combined chat and infeasible messages."""
+        """
+        Return combined chat and infeasible messages.
+
+        Normal path (ChatTool): a copy of session history — safe for parallel episodes,
+        always current because send_message() writes before evaluate() runs.
+
+        Cheat path (WorkArenaCheatTool, no ChatTool): the live _chat_messages_ref list.
+        cheat() appends directly to whatever list it receives, so cheat() and validate()
+        must share the same list instance.
+        """
         messages: list[dict] = []
-        if (chat := self._chat_tool) is not None:
+        if self._chat_tool is None and isinstance(self._browser_tool, WorkArenaCheatTool):
+            messages.extend(self._browser_tool._chat_messages_ref)
+        elif (chat := self._chat_tool) is not None:
             messages.extend(chat.messages)
         if (infeasible := self._infeasible_tool) is not None:
             messages.extend(infeasible.messages)
@@ -146,7 +130,7 @@ class WorkArenaTask(Task):
             raise RuntimeError("WorkArena task is not initialized. Call reset() first.")
         if self._validate_cache is None:
             page = self._browser_tool.page
-            self._validate_cache = self._workarena_task.validate(page, self._chat_messages)
+            self._validate_cache = self._workarena_task.validate(page, self._chat_messages)  # type: ignore : Workarena validators expect list[dict] despite the protocol specifying list[str].
         return self._validate_cache  # type: ignore[return-value]
 
     @override
@@ -154,12 +138,12 @@ class WorkArenaTask(Task):
         self._validate_cache = None
         return super().step(action)
 
-    def evaluate(self, obs: Observation) -> tuple[float, dict[str, Any]]:
+    def evaluate(self, obs: Observation | None = None) -> tuple[float, dict[str, Any]]:
         """Score the current task state via WorkArena's validate()."""
         reward, done, _user_message, task_info = self._validate()
         return reward, {"done": done, **task_info}
 
-    def finished(self, obs: Observation) -> bool:
+    def finished(self, obs: Observation | None = None) -> bool:
         """Check if the task is done via WorkArena's validate()."""
         if self._workarena_task is None:
             return False
@@ -187,14 +171,7 @@ class WorkArenaTask(Task):
 
 
 class WorkArenaTaskConfig(TaskConfig):
-    """Serializable configuration for a single WorkArena task.
-
-    Embeds task_class_path so that make() can construct TaskMetadata without
-    depending on the ClassVar WorkArenaBenchmark.task_metadata — which is empty
-    in Ray worker processes.
-    """
-
-    task_class_path: str
+    """Serializable configuration for a single WorkArena task."""
 
     def make(
         self,
@@ -205,6 +182,7 @@ class WorkArenaTaskConfig(TaskConfig):
 
         _ = runtime_context, container_backend
         meta = WorkArenaBenchmark.task_metadata[self.task_id]
+        assert self.tool_config, f"WorkArenaTaskConfig requires a tool_config, got {self.tool_config}"
         return WorkArenaTask(
             metadata=meta,
             tool_config=self.tool_config,
