@@ -21,11 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 from pathlib import Path
-
-# Make the package importable when executed from the cube root without venv activation.
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from browsergym.workarena import get_all_tasks_agents
 
