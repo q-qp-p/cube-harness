@@ -58,14 +58,18 @@ wait_healthy() {
     exit 1
 }
 
-# Sites in parallel (backgrounded), then wait for all
-wait_healthy "shopping_admin" "http://localhost:7780/"                     150 &
-wait_healthy "shopping"       "http://localhost:7770/customer/account/login" 150 &
-wait_healthy "reddit"         "http://localhost:9999/login"                 60  &
-wait_healthy "gitlab"         "http://localhost:8023/users/sign_in"         300 &
-wait_healthy "wikipedia"      "http://localhost:8888/"                      60  &
-wait_healthy "map"            "http://localhost:3000/"                      60  &
-wait
+# Sites in parallel (backgrounded), then wait for all — capture PIDs to
+# propagate individual failures (bare `wait` only returns the last job's exit code).
+pids=()
+wait_healthy "shopping_admin" "http://localhost:7780/"                     150 & pids+=($!)
+wait_healthy "shopping"       "http://localhost:7770/customer/account/login" 150 & pids+=($!)
+wait_healthy "reddit"         "http://localhost:9999/login"                 60  & pids+=($!)
+wait_healthy "gitlab"         "http://localhost:8023/users/sign_in"         300 & pids+=($!)
+wait_healthy "wikipedia"      "http://localhost:8888/"                      60  & pids+=($!)
+wait_healthy "map"            "http://localhost:3000/"                      60  & pids+=($!)
+failed=0
+for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+(( failed == 0 )) || { echo "ERROR: one or more sites failed healthcheck" >&2; exit 1; }
 
 echo "[launch] All 6 sites healthy"
 
