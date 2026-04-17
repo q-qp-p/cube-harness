@@ -2,7 +2,7 @@
 name = "cube-integration-tests"
 version = "0.1.0"
 description = "End-to-end integration tests for CUBE infra backends + benchmark cubes"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = ["cube-standard"]
 
 [build-system]
@@ -23,10 +23,7 @@ azure = [
 ]
 
 [tool.uv.sources]
-cube-standard = { path = "../../cube-standard", editable = true }
-cube-infra-aws = { path = "../../cube-standard/cube-resources/cube-infra-aws", editable = true }
-cube-infra-azure = { path = "../../cube-standard/cube-resources/cube-infra-azure", editable = true }
+cube-standard = { git = "https://github.com/The-AI-Alliance/cube-standard" }  # TODO: remove once 0.1.0rc5 released
+cube-infra-aws = { git = "https://github.com/The-AI-Alliance/cube-standard", subdirectory = "cube-resources/cube-infra-aws" }  # TODO: remove once cube-infra-aws released
+cube-infra-azure = { git = "https://github.com/The-AI-Alliance/cube-standard", subdirectory = "cube-resources/cube-infra-azure" }  # TODO: remove once cube-infra-azure released
 webarena-verified-cube = { path = "../cubes/webarena-verified", editable = true }
-
-[tool.uv]
-override-dependencies = ["cube-standard @ file:///Users/alexandre.lacoste/dev/cube/cube-standard"]
