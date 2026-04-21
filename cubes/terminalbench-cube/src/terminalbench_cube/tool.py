@@ -94,21 +94,27 @@ class TerminalBenchTool(Tool):
     def upload_directory(self, local_dir: Path, remote_dir: str) -> None:
         """Upload a local directory tree to the container in a single exec.
 
-        Packs ``local_dir`` into an in-memory tar.gz and hands it to a python3
-        process inside the container that decodes and extracts it.  Using
-        ``python3`` avoids the fragility of chaining ``printf | base64 | tar``
-        through multiple shell-quoting layers (host shell → eai CLI → remote
-        ``bash -lc``) and is binary-safe regardless of the base64 payload
-        size.  Terminal-Bench images ship with python3 by convention.
+        Packs ``local_dir`` into an in-memory tar.gz, writes the base64 string
+        to a temp file via multi-chunk ``printf >> file`` (shell-quoting-safe
+        even through nested eai CLI → remote bash layers), then decodes and
+        extracts.  Uses only base64+tar which every POSIX task image ships —
+        no dependency on python3 in the target image.
         """
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
             tar.add(local_dir, arcname=".")
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        script = (
-            "import base64, io, os, sys, tarfile; "
-            f"os.makedirs({remote_dir!r}, exist_ok=True); "
-            "tarfile.open(fileobj=io.BytesIO(base64.b64decode(sys.argv[1])), mode='r:gz')"
-            f".extractall({remote_dir!r}, filter='data')"
+        remote_q = shlex.quote(remote_dir)
+        # Write the base64 payload in 8 KB chunks.  Single-arg printf through
+        # multiple shell layers can mangle long strings (observed with
+        # eai CLI + bash -lc); short chunks are robust.
+        chunk_size = 8192
+        staging = "/tmp/cube-upload.tar.gz.b64"
+        self._exec(f": > {staging}")
+        for i in range(0, len(b64), chunk_size):
+            self._exec(f"printf %s {shlex.quote(b64[i : i + chunk_size])} >> {staging}")
+        self._exec(
+            f"mkdir -p {remote_q} && "
+            f"base64 -d < {staging} | tar -xzf - -C {remote_q} && "
+            f"rm -f {staging}"
         )
-        self._exec(f"python3 -c {shlex.quote(script)} {shlex.quote(b64)}")
