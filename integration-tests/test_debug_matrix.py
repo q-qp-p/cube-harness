@@ -5,16 +5,17 @@ Runs every (cube, infra) combination end-to-end through the cube's debug suite
 reward == 1.0). Covers:
 
     cubes: terminalbench, swebench-verified, swebench-live
-    infras: LocalInfraConfig, DaytonaInfraConfig, ToolkitInfraConfig
+    infras: LocalInfraConfig, DaytonaInfraConfig, ToolkitInfraConfig, ModalInfraConfig
 
 Each parametrised case is independently skippable based on prerequisites
 (Docker daemon for local, ``DAYTONA_API_KEY`` for Daytona, ``eai`` CLI +
-``EAI_PROFILE`` for Toolkit), so the matrix degrades gracefully in CI.
+``EAI_PROFILE`` for Toolkit, ``MODAL_TOKEN_ID`` or ``~/.modal.toml`` for Modal),
+so the matrix degrades gracefully in CI.
 
 Run
 ---
     cd cube-harness
-    uv run --group local --group daytona --group toolkit \\
+    uv run --group local --group daytona --group toolkit --group modal \\
         pytest integration-tests/test_debug_matrix.py -v -s
 
     # Subset examples
@@ -72,6 +73,12 @@ def _toolkit_infra() -> InfraConfig:
     return ToolkitInfraConfig()
 
 
+def _modal_infra() -> InfraConfig:
+    from cube_infra_modal import ModalInfraConfig
+
+    return ModalInfraConfig()
+
+
 # ── prerequisite checks (run at collection time to decide skip/run) ──────────
 
 
@@ -89,10 +96,18 @@ def _has_toolkit() -> bool:
     return shutil.which("eai") is not None and bool(os.environ.get("EAI_PROFILE"))
 
 
+def _has_modal() -> bool:
+    """Modal credentials available — either env vars or ``~/.modal.toml``."""
+    if os.environ.get("MODAL_TOKEN_ID") and os.environ.get("MODAL_TOKEN_SECRET"):
+        return True
+    return os.path.exists(os.path.expanduser("~/.modal.toml"))
+
+
 _INFRAS: list[tuple[str, Callable[[], InfraConfig], Callable[[], bool], str]] = [
     ("local", _local_infra, _has_docker, "Docker daemon not reachable"),
     ("daytona", _daytona_infra, _has_daytona, "DAYTONA_API_KEY not set"),
     ("toolkit", _toolkit_infra, _has_toolkit, "eai CLI or EAI_PROFILE not set"),
+    ("modal", _modal_infra, _has_modal, "Modal credentials not configured"),
 ]
 
 
