@@ -157,13 +157,22 @@ class TerminalBenchTask(Task):
             self.tool.bash(f"mkdir -p {self._tests_dir} {self._logs_verifier_dir}")
             if tests_dir.exists():
                 self.tool.upload_directory(tests_dir, self._tests_dir)
-                # Upstream test.sh hardcodes '/tests' and '/logs/verifier'.
-                # We always upload to /tmp-prefixed paths, so rewrite in-place.
+                # Upstream test.sh + test_outputs.py hardcode '/tests',
+                # '/logs/verifier', and '/app'.  We upload to /tmp-prefixed
+                # paths and may have relocated /app -> /tmp/app — rewrite in
+                # place so all references line up with the actual locations
+                # the solve commands wrote to.  Applies to test.sh (shell) and
+                # test_outputs.py (Python).
+                app_dir = self.tool._config.working_dir  # type: ignore[attr-defined]
+                sed_expr = (
+                    f"s|/logs/verifier|{self._logs_verifier_dir}|g;"
+                    f"s|/tests/|{self._tests_dir}/|g;"
+                    f"s|/tests |{self._tests_dir} |g;"
+                    + (f"s|/app/|{app_dir}/|g;s|/app|{app_dir}|g;" if app_dir != "/app" else "")
+                )
                 self.tool.bash(
-                    f"sed -i 's|/logs/verifier|{self._logs_verifier_dir}|g; "
-                    f"s|/tests/|{self._tests_dir}/|g; "
-                    f"s|/tests |{self._tests_dir} |g' "
-                    f"{self._tests_dir}/test.sh"
+                    f"find {self._tests_dir} -type f \\( -name '*.sh' -o -name '*.py' \\) "
+                    f"-exec sed -i '{sed_expr}' {{}} +"
                 )
                 self.tool.bash(f"chmod +x {self._tests_dir}/test.sh")
 
