@@ -120,9 +120,16 @@ _KNOWN_XFAIL: dict[tuple[str, str], str] = {
     # default sandbox network policy and EAI's cluster network both drop or
     # reset that connection intermittently, so evaluate() produces reward=0
     # despite solve.sh running correctly.  Fix belongs upstream in terminal-
-    # bench-2 (pre-bake uv into the task image) — see xfail on both combos.
+    # bench-2 (pre-bake uv into the task image).
     ("terminalbench", "daytona"): "test.sh outbound install fails on Daytona sandbox network",
     ("terminalbench", "toolkit"): "test.sh outbound install fails on EAI cluster network",
+    # SWE-bench cubes embed patches as multi-KB base64 in a shell arg
+    # (``echo <b64> | base64 -d > /tmp/patch``).  ``eai job exec`` hangs
+    # indefinitely on payloads past ~1-2 KB — cube's subprocess buffer gets
+    # stuck in the CLI's I/O loop.  Proper fix is a typed Container.write_file
+    # abstraction (proposed in openspec change `resource-convergence`).
+    ("swebench_verified", "toolkit"): "eai exec hangs on multi-KB shell-arg patch payload (flaky)",
+    ("swebench_live", "toolkit"): "eai exec hangs on multi-KB shell-arg patch payload (flaky)",
 }
 
 
