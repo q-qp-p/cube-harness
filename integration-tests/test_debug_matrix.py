@@ -139,27 +139,6 @@ _INFRAS: list[tuple[str, Callable[[], InfraConfig], Callable[[], bool], str]] = 
 # this migration's scope.  Keep the entries in the matrix so the gap stays
 # visible in CI output; mark them xfail with a concrete reason.
 _KNOWN_XFAIL: dict[tuple[str, str], str] = {
-    # terminal-bench task images ship a test.sh that `curl`s
-    # https://astral.sh/.../install.sh to bootstrap uv + pytest.  Daytona's
-    # default sandbox network policy and EAI's cluster network both drop or
-    # reset that connection intermittently, so evaluate() produces reward=0
-    # despite solve.sh running correctly.  Fix belongs upstream in terminal-
-    # bench-2 (pre-bake uv into the task image).
-    ("terminalbench", "daytona"): "test.sh outbound install fails on Daytona sandbox network",
-    # terminalbench-toolkit: the debug suite includes 'overfull-hbox', a
-    # minimal LaTeX image that ships WITHOUT python3 AND without curl.  The
-    # sidecar server (pure-python) therefore can't bootstrap inside the
-    # container, and the fallback `eai job exec` path hits the CLOSE_WAIT
-    # hang bug on this specific image.  Other terminalbench tasks (fix-git
-    # etc.) pass cleanly on Toolkit.  Fix belongs in the task image (install
-    # python3-minimal) or in a static-binary sidecar (Go/Rust) — out of scope
-    # for this PR.  The swebench-*-toolkit images all have python3 and do
-    # not hit this limitation.
-    ("terminalbench", "toolkit"): "overfull-hbox image lacks python3 + curl; sidecar can't bootstrap",
-    # Same root cause as toolkit: overfull-hbox is a bare LaTeX image with no
-    # python3 or uv; ModalContainer.exec() succeeds but the test runner inside
-    # the container can't be bootstrapped so evaluate() returns reward=0.
-    ("terminalbench", "modal"): "overfull-hbox image lacks python3; test runner can't bootstrap",
     # swebench-*-toolkit: images chown /testbed to root (not the runtime
     # 'toolkit' uid).  Fix: SWEBenchTask.model_post_init now detects a
     # read-only working_dir and copies to /tmp/testbed (cp -a preserves

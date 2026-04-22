@@ -256,16 +256,26 @@ class TerminalBenchTask(Task):
         curl is rc=127, the source finds nothing, uvx is missing, pytest can't
         run, reward=0.
 
-        Fix: install ``uv`` via ``pip`` from pypi (reachable on Toolkit) into
-        ``/tmp/fakehome/.local/bin``, create the env file test.sh expects, and
-        override ``HOME=/tmp/fakehome`` when running test.sh.  On backends where
-        test.sh works natively (LocalContainer, Modal), this is a cheap no-op
-        that just shadows the real HOME for the one bash command.
+        Fix: ensure python3 is present (some minimal images like LaTeX ship
+        without it — install via apt if needed), then install ``uv`` via ``pip``
+        from PyPI into ``/tmp/fakehome/.local/bin``, create the env file
+        test.sh expects, and override ``HOME=/tmp/fakehome`` when running test.sh.
         """
         marker = "/tmp/fakehome/.local/bin/uv"
         probe = self.tool.bash(f"test -x {marker} && echo EXISTS || echo MISSING", timeout=15)
         if "EXISTS" in probe:
             return
+
+        # Some minimal images (e.g. bare LaTeX) ship without python3.
+        # Install it via apt before attempting pip install uv.
+        has_python = self.tool.bash("python3 --version 2>/dev/null && echo HAS_PYTHON || echo NO_PYTHON", timeout=15)
+        if "NO_PYTHON" in has_python:
+            logger.info("python3 not found — installing via apt-get")
+            self.tool.bash(
+                "apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-pip 2>&1",
+                timeout=120,
+            )
+
         logger.info("Pre-installing uv into /tmp/fakehome/.local/bin (backend-portable workaround)")
         cmd = (
             "export HOME=/tmp/fakehome && "
@@ -274,7 +284,9 @@ class TerminalBenchTask(Task):
             "cp /tmp/uv_pkg/bin/uv /tmp/uv_pkg/bin/uvx $HOME/.local/bin/ && "
             "printf 'export PATH=\"$HOME/.local/bin:$PATH\"\\n' > $HOME/.local/bin/env"
         )
-        self.tool.bash(cmd, timeout=300)
+        result = self.tool.bash(cmd, timeout=300)
+        if not result or "error" in result.lower():
+            logger.warning("uv pre-install may have failed; test.sh will fall back to curl: %s", result[:200])
 
     def finished(self, obs: Observation | None = None) -> bool:
         return False
