@@ -20,6 +20,23 @@ from cube.task_infra import launch_task_container
 
 from swebench_live_cube.tool import SWEBenchTool, SWEBenchToolConfig
 
+
+def _maybe_relocate_testbed(container, tool_config: SWEBenchToolConfig) -> SWEBenchToolConfig:
+    """If ``tool_config.working_dir`` is read-only, copy it to a writable path.
+
+    See swebench_verified_cube.task._maybe_relocate_testbed for rationale.
+    """
+    wd = tool_config.working_dir
+    probe = container.exec(f"test -w {wd} && echo W || echo R", timeout=30)
+    if "R" not in probe.stdout:
+        return tool_config
+    new_wd = "/tmp/testbed"
+    container.exec(
+        f"cp -a {wd} {new_wd} && git config --global --add safe.directory {new_wd}",
+        timeout=300,
+    )
+    return tool_config.model_copy(update={"working_dir": new_wd})
+
 logger = logging.getLogger(__name__)
 
 # POSIX-compatible: use `.` instead of `source`, skip silently if conda is absent.
@@ -69,7 +86,8 @@ class SWEBenchLiveTask(Task):
                 ram_gb=cc.ram_gb,
                 cpu_cores=cc.cpu_cores,
             )
-            self._tool = self.tool_config.make(container=self._container)
+            tool_config = _maybe_relocate_testbed(self._container, self.tool_config)
+            self._tool = tool_config.make(container=self._container)
             return
 
         super().model_post_init(__context)
@@ -148,17 +166,16 @@ class SWEBenchLiveTask(Task):
         self.tool.bash_unlimited(f"echo '{b64}' | base64 -d > /tmp/patch.diff")
 
         # Try git apply first
-        result = self.tool.bash_unlimited("cd /testbed && git apply /tmp/patch.diff 2>&1", timeout=30)
+        # Commands run in tool.working_dir (may be relocated to writable copy).
+        result = self.tool.bash_unlimited("git apply /tmp/patch.diff 2>&1", timeout=30)
         if "[exit_code:" not in result and "[error]" not in result:
             return result
 
-        # Fallback: git apply --reject
-        result = self.tool.bash_unlimited("cd /testbed && git apply --reject /tmp/patch.diff 2>&1", timeout=30)
+        result = self.tool.bash_unlimited("git apply --reject /tmp/patch.diff 2>&1", timeout=30)
         if "[exit_code:" not in result and "[error]" not in result:
             return result
 
-        # Final fallback: patch
-        return self.tool.bash_unlimited("cd /testbed && patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=60)
+        return self.tool.bash_unlimited("patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=60)
 
     def _run_test_cmds(self, test_cmds: list[str], timeout: int = 1800) -> str:
         """Run the explicit test commands from the dataset."""
@@ -168,7 +185,7 @@ class SWEBenchLiveTask(Task):
 
         outputs = []
         for cmd in test_cmds:
-            full_cmd = f"{CONDA_ACTIVATE} && cd /testbed && {cmd}"
+            full_cmd = f"{CONDA_ACTIVATE} && {cmd}"  # tool.working_dir already set
             output = self.tool.bash_unlimited(full_cmd, timeout=timeout)
             outputs.append(output)
         return "\n".join(outputs)

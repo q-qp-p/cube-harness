@@ -122,19 +122,18 @@ _KNOWN_XFAIL: dict[tuple[str, str], str] = {
     # despite solve.sh running correctly.  Fix belongs upstream in terminal-
     # bench-2 (pre-bake uv into the task image).
     ("terminalbench", "daytona"): "test.sh outbound install fails on Daytona sandbox network",
-    ("terminalbench", "toolkit"): "test.sh outbound install fails on EAI cluster network",
-    # swebench-live-toolkit: the cyclotruc/gitingest image's /testbed files
-    # are chowned to a UID that isn't readable/writable by EAI's default
-    # container user ('toolkit').  `git apply /tmp/gold_patch.diff` fails
-    # with "unable to unlink: Permission denied" on those files.  Unrelated
-    # to eai hangs or the bg+poll workaround — dynaconf (same cube, same
-    # backend, root-owned testbed) passes cleanly.  Fix is image-side
-    # (chown /testbed to the runtime user) or infra-side (run container
-    # as root).  Keep swebench-verified-toolkit enabled; it passes.
-    ("swebench_live", "toolkit"): (
-        "cyclotruc/gitingest image chowns /testbed to non-'toolkit' UID; "
-        "git apply fails with Permission denied on Toolkit's non-root runtime user"
-    ),
+    # swebench-*-toolkit: images chown /testbed to root (not the runtime
+    # 'toolkit' uid).  Fix: SWEBenchTask.model_post_init now detects a
+    # read-only working_dir and copies to /tmp/testbed (cp -a preserves
+    # git metadata) — git apply then works cleanly as the non-root user.
+    # See _maybe_relocate_testbed in the task modules.  No xfail needed.
+    #
+    # terminalbench-toolkit: test.sh calls `curl https://astral.sh/...` to
+    # install uv; EAI cluster IP is 403-blocked by Cloudflare AND curl isn't
+    # in the image AND $HOME is read-only.  Fix: TerminalBenchTask.evaluate
+    # pre-installs uv via `pip install --target /tmp/uv_pkg uv` (pypi is
+    # reachable) and points test.sh's `source $HOME/.local/bin/env` at a
+    # /tmp/fakehome override.  See _ensure_uv_preinstalled.
 }
 
 

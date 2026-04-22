@@ -24,6 +24,30 @@ logger = logging.getLogger(__name__)
 CONDA_ACTIVATE = "if [ -f /opt/miniconda3/etc/profile.d/conda.sh ]; then . /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed; fi"
 
 
+def _maybe_relocate_testbed(container, tool_config: SWEBenchToolConfig) -> SWEBenchToolConfig:
+    """If ``tool_config.working_dir`` is read-only, copy it to ``/tmp/testbed``
+    and return an updated ToolConfig pointing there.
+
+    Targets Toolkit/EAI-style backends that run containers as an unprivileged
+    user (uid 13011 ``toolkit``) while SWE-bench images chown /testbed to
+    root with mode 644.  Under that combo ``git apply`` fails with
+    "Permission denied".  ``cp -a`` preserves git metadata; the
+    ``safe.directory`` config line keeps git from complaining about the
+    new owner post-copy.
+    """
+    wd = tool_config.working_dir
+    probe = container.exec(f"test -w {wd} && echo W || echo R", timeout=30)
+    if "R" not in probe.stdout:
+        return tool_config
+    new_wd = "/tmp/testbed"
+    logger.info("%s not writable by runtime user — copying to %s for this backend", wd, new_wd)
+    container.exec(
+        f"cp -a {wd} {new_wd} && git config --global --add safe.directory {new_wd}",
+        timeout=300,
+    )
+    return tool_config.model_copy(update={"working_dir": new_wd})
+
+
 class SWEBenchVerifiedTaskMetadata(TaskMetadata):
     """TaskMetadata subclass for SWE-bench Verified tasks.
 
@@ -70,7 +94,12 @@ class SWEBenchVerifiedTask(Task):
                 ram_gb=cc.ram_gb,
                 cpu_cores=cc.cpu_cores,
             )
-            self._tool = self.tool_config.make(container=self._container)
+            # Some SWE-bench images chown /testbed to root with mode 644. When
+            # the backend runs the container as an unprivileged user (Toolkit
+            # runs as uid 13011 `toolkit`), those files aren't writable by
+            # `git apply`.  Detect this and fall back to a writable copy.
+            tool_config = _maybe_relocate_testbed(self._container, self.tool_config)
+            self._tool = tool_config.make(container=self._container)
             return
 
         super().model_post_init(__context)
@@ -149,17 +178,20 @@ class SWEBenchVerifiedTask(Task):
         self.tool.bash_unlimited(f"echo '{b64}' | base64 -d > /tmp/patch.diff")
 
         # Try git apply first
-        result = self.tool.bash_unlimited("cd /testbed && git apply /tmp/patch.diff 2>&1", timeout=30)
+        # Commands run in tool.working_dir (set by SWEBenchToolConfig) — no need
+        # to cd, and hardcoding '/testbed' breaks when the tool relocated to a
+        # writable copy (see _maybe_relocate_testbed).
+        result = self.tool.bash_unlimited("git apply /tmp/patch.diff 2>&1", timeout=30)
         if "[exit_code:" not in result and "[error]" not in result:
             return result
 
         # Fallback: git apply --reject
-        result = self.tool.bash_unlimited("cd /testbed && git apply --reject /tmp/patch.diff 2>&1", timeout=30)
+        result = self.tool.bash_unlimited("git apply --reject /tmp/patch.diff 2>&1", timeout=30)
         if "[exit_code:" not in result and "[error]" not in result:
             return result
 
         # Final fallback: patch
-        return self.tool.bash_unlimited("cd /testbed && patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=60)
+        return self.tool.bash_unlimited("patch --batch --fuzz=5 -p1 -i /tmp/patch.diff 2>&1", timeout=60)
 
     def _run_tests(self, repo: str, test_directives: list[str], timeout: int = 1800) -> tuple[bool, str]:
         """Run test directives and return (all_passed, output)."""
@@ -168,7 +200,7 @@ class SWEBenchVerifiedTask(Task):
             return True, ""
 
         test_cmd = self._build_test_cmd(repo, test_directives)
-        cmd = f"{CONDA_ACTIVATE} && cd /testbed && {test_cmd}"
+        cmd = f"{CONDA_ACTIVATE} && {test_cmd}"  # tool.working_dir is already the testbed
         output = self.tool.bash_unlimited(cmd, timeout=timeout)
 
         all_passed = "[exit_code:" not in output and "[error]" not in output

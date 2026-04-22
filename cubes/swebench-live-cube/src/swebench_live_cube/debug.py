@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Each debug task runs in oracle_mode: the gold patch is written to
 # /tmp/gold_patch.diff during reset(). The debug agent applies it
 # and calls final_step, which triggers evaluate() → tests → reward == 1.0.
-_APPLY_PATCH = Action(name="bash", arguments={"command": "cd /testbed && git apply /tmp/gold_patch.diff 2>&1"})
+_APPLY_PATCH = Action(name="bash", arguments={"command": "git apply /tmp/gold_patch.diff 2>&1"})
 _FINAL = Action(name="final_step", arguments={})
 
 _TASK_ACTIONS: dict[str, list[Action]] = {

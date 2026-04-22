@@ -23,6 +23,29 @@ from terminalbench_cube.tool import TerminalBenchTool, TerminalBenchToolConfig
 logger = logging.getLogger(__name__)
 
 
+def _maybe_relocate_app(container, tool_config: TerminalBenchToolConfig) -> TerminalBenchToolConfig:
+    """If ``tool_config.working_dir`` is read-only in the container, copy it to a
+    writable path and return an updated ToolConfig.
+
+    Pattern mirrors swebench's ``_maybe_relocate_testbed``.  Should eventually
+    be promoted to a shared ``cube.container.Container`` utility.
+    """
+    wd = tool_config.working_dir
+    probe = container.exec(f"test -w {wd} && echo W || echo R", timeout=30)
+    if "R" not in probe.stdout:
+        return tool_config
+    new_wd = "/tmp/app"
+    logger.info("%s not writable by runtime user — copying to %s", wd, new_wd)
+    container.exec(
+        f"cp -a {wd} {new_wd} && "
+        # git repos under /app need safe.directory to work as the new user.
+        f"find {new_wd} -type d -name .git -exec git config --global --add safe.directory "
+        f"$(dirname {{}}) \\; 2>/dev/null || true",
+        timeout=300,
+    )
+    return tool_config.model_copy(update={"working_dir": new_wd})
+
+
 class TerminalBenchTaskMetadata(TaskMetadata):
     """TaskMetadata subclass for Terminal-Bench tasks.
 
@@ -57,6 +80,16 @@ class TerminalBenchTask(Task):
     # close(). Not serialised (PrivateAttr).
     _resource_handle: ResourceHandle | None = PrivateAttr(default=None)
 
+    # Container-side paths — we always put these under /tmp so the logic works
+    # uniformly on root and non-root backends.  /tmp is universally writable
+    # (it's a tmpfs on every POSIX container, and EAI Toolkit images also have
+    # it mode 1777).  The task images still have read-only /testbed or /app
+    # dirs owned by root, which is why we sometimes relocate those — but the
+    # dirs we CREATE are always in /tmp.
+    _solution_dir: str = PrivateAttr(default="/tmp/solution")
+    _tests_dir: str = PrivateAttr(default="/tmp/tests")
+    _logs_verifier_dir: str = PrivateAttr(default="/tmp/logs/verifier")
+
     def model_post_init(self, __context: Any) -> None:
         """Launch the per-task container via the benchmark's infra, then build the tool.
 
@@ -74,7 +107,14 @@ class TerminalBenchTask(Task):
                 ram_gb=cc.ram_gb,
                 cpu_cores=cc.cpu_cores,
             )
-            self._tool = self.tool_config.make(container=self._container)
+            # Some terminal-bench images chown /app to root mode 755.  When the
+            # backend runs as an unprivileged user (EAI Toolkit: uid 13011
+            # toolkit), the agent's git operations in /app fail silently.
+            # Detect and fall back to a writable copy.  All the dirs we CREATE
+            # (solution/, tests/, logs/verifier) are already under /tmp by
+            # default — see PrivateAttr defaults on this class.
+            tool_config = _maybe_relocate_app(self._container, self.tool_config)
+            self._tool = tool_config.make(container=self._container)
             return
 
         super().model_post_init(__context)
@@ -97,8 +137,8 @@ class TerminalBenchTask(Task):
         # Oracle mode: upload solution for debugging/baselines
         if extra.get("oracle_mode") and (task_path / "solution").exists():
             assert isinstance(self.tool, TerminalBenchTool)
-            self.tool.bash("mkdir -p /solution")
-            self.tool.upload_directory(task_path / "solution", "/solution")
+            self.tool.bash(f"mkdir -p {self._solution_dir}")
+            self.tool.upload_directory(task_path / "solution", self._solution_dir)
 
         return Observation.from_text(extra["instruction"]), {
             "task_id": self.metadata.id,
@@ -113,20 +153,36 @@ class TerminalBenchTask(Task):
         # Upload test harness to the sandbox
         if self._task_path is not None:
             tests_dir = self._task_path / "tests"
-            self.tool.bash("mkdir -p /tests /logs/verifier")
+            self.tool.bash(f"mkdir -p {self._tests_dir} {self._logs_verifier_dir}")
             if tests_dir.exists():
-                self.tool.upload_directory(tests_dir, "/tests")
-                self.tool.bash("chmod +x /tests/test.sh")
+                self.tool.upload_directory(tests_dir, self._tests_dir)
+                # Upstream test.sh hardcodes '/tests' and '/logs/verifier'.
+                # We always upload to /tmp-prefixed paths, so rewrite in-place.
+                self.tool.bash(
+                    f"sed -i 's|/logs/verifier|{self._logs_verifier_dir}|g; "
+                    f"s|/tests/|{self._tests_dir}/|g; "
+                    f"s|/tests |{self._tests_dir} |g' "
+                    f"{self._tests_dir}/test.sh"
+                )
+                self.tool.bash(f"chmod +x {self._tests_dir}/test.sh")
 
-        # Run test.sh → pytest → writes reward to /logs/verifier/reward.txt
+        # Pre-install `uv` + fake HOME so test.sh's
+        #   curl https://astral.sh/uv/…/install.sh | sh  →  source $HOME/.local/bin/env
+        # succeeds even when astral.sh is unreachable (EAI Toolkit returns 403
+        # Forbidden on that host) and when $HOME is a read-only mount.
+        # pypi is reachable on Toolkit; pip installs uv in ~10 s.
+        self._ensure_uv_preinstalled()
+
+        # Run test.sh → pytest → writes reward.txt in the logs-verifier dir.
+        # Tool's working_dir is already set (may be /tmp/app after relocation).
         output = self.tool.bash(
-            "cd /app && bash /tests/test.sh",
+            f"export HOME=/tmp/fakehome && bash {self._tests_dir}/test.sh",
             timeout=extra.get("max_test_timeout_sec", 900),
         )
         test_results = self._parse_pytest_output(output)
 
         # Read reward written by test.sh
-        reward_output = self.tool.bash("cat /logs/verifier/reward.txt 2>/dev/null || echo 0")
+        reward_output = self.tool.bash(f"cat {self._logs_verifier_dir}/reward.txt 2>/dev/null || echo 0")
         try:
             reward = float(reward_output.strip().split()[0])
         except (ValueError, IndexError):
@@ -141,6 +197,39 @@ class TerminalBenchTask(Task):
             "test_results": test_results,
             "output_preview": output[:1000] if output else "",
         }
+
+    def _ensure_uv_preinstalled(self) -> None:
+        """Pre-install ``uv`` so test.sh's ``source $HOME/.local/bin/env`` works.
+
+        Terminal-Bench task test.sh files bootstrap ``uv`` via
+            curl -LsSf https://astral.sh/uv/0.9.5/install.sh | sh
+            source $HOME/.local/bin/env
+
+        On some backends (EAI Toolkit in particular), ``astral.sh`` returns HTTP
+        403 (cluster IP range rejected by Cloudflare) AND ``curl`` isn't even in
+        the image AND ``$HOME`` is read-only.  All three failures cascade: the
+        curl is rc=127, the source finds nothing, uvx is missing, pytest can't
+        run, reward=0.
+
+        Fix: install ``uv`` via ``pip`` from pypi (reachable on Toolkit) into
+        ``/tmp/fakehome/.local/bin``, create the env file test.sh expects, and
+        override ``HOME=/tmp/fakehome`` when running test.sh.  On backends where
+        test.sh works natively (LocalContainer, Modal), this is a cheap no-op
+        that just shadows the real HOME for the one bash command.
+        """
+        marker = "/tmp/fakehome/.local/bin/uv"
+        probe = self.tool.bash(f"test -x {marker} && echo EXISTS || echo MISSING", timeout=15)
+        if "EXISTS" in probe:
+            return
+        logger.info("Pre-installing uv into /tmp/fakehome/.local/bin (backend-portable workaround)")
+        cmd = (
+            "export HOME=/tmp/fakehome && "
+            "mkdir -p $HOME/.local/bin && "
+            "python3 -m pip install --quiet --target /tmp/uv_pkg uv && "
+            "cp /tmp/uv_pkg/bin/uv /tmp/uv_pkg/bin/uvx $HOME/.local/bin/ && "
+            "printf 'export PATH=\"$HOME/.local/bin:$PATH\"\\n' > $HOME/.local/bin/env"
+        )
+        self.tool.bash(cmd, timeout=300)
 
     def finished(self, obs: Observation | None = None) -> bool:
         return False

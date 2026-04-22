@@ -24,15 +24,19 @@ logger = logging.getLogger(__name__)
 _FINAL = Action(name="final_step", arguments={})
 
 _TASK_ACTIONS: dict[str, list[Action]] = {
+    # Relative `personal-site` works whether working_dir is /app (default) or
+    # /tmp/app (after _maybe_relocate_app on non-root backends).
+    # /tmp/solution is where TerminalBenchTask.reset() uploads the solution
+    # for any backend — /tmp is universally writable.
     "fix-git": [
         Action(
             name="bash",
-            arguments={"command": "cd /app/personal-site && bash /solution/solve.sh 2>&1", "timeout": 600},
+            arguments={"command": "cd personal-site && bash /tmp/solution/solve.sh 2>&1", "timeout": 600},
         ),
         _FINAL,
     ],
     "overfull-hbox": [
-        Action(name="bash", arguments={"command": "bash /solution/solve.sh 2>&1", "timeout": 600}),
+        Action(name="bash", arguments={"command": "bash /tmp/solution/solve.sh 2>&1", "timeout": 600}),
         _FINAL,
     ],
 }
