@@ -41,7 +41,13 @@ def _maybe_relocate_app(container, tool_config: TerminalBenchToolConfig) -> Term
         # Git refuses to run in dirs whose ownership differs from the caller
         # ('dubious ownership' warning).  '*' disables the check globally —
         # safe in this test-runner context.
-        "git config --global --add safe.directory '*'",
+        "git config --global --add safe.directory '*' && "
+        # Toolkit runs as uid 13011 with no /etc/passwd entry, so git can't
+        # auto-detect a committer identity.  Tasks that make commits (e.g.
+        # fix-git's `git merge`) fail with exit 128 "Committer identity unknown"
+        # without this.  No-op on backends where identity is already configured.
+        "git config --global user.email 'cube-harness@example.com' && "
+        "git config --global user.name 'Cube Harness'",
         timeout=300,
     )
     return tool_config.model_copy(update={"working_dir": new_wd})
@@ -140,6 +146,11 @@ class TerminalBenchTask(Task):
             assert isinstance(self.tool, TerminalBenchTool)
             self.tool.bash(f"mkdir -p {self._solution_dir}")
             self.tool.upload_directory(task_path / "solution", self._solution_dir)
+            # solve.sh can hardcode /app (the image's canonical working dir).
+            # If we relocated to /tmp/app at post_init, patch solve.sh's paths
+            # so the gold solution actually touches the writable copy.  Same
+            # pattern used on the tests dir at evaluate() time.
+            self._rewrite_app_paths(self._solution_dir)
 
         return Observation.from_text(extra["instruction"]), {
             "task_id": self.metadata.id,
@@ -161,18 +172,15 @@ class TerminalBenchTask(Task):
                 # '/logs/verifier', and '/app'.  We upload to /tmp-prefixed
                 # paths and may have relocated /app -> /tmp/app — rewrite in
                 # place so all references line up with the actual locations
-                # the solve commands wrote to.  Applies to test.sh (shell) and
+                # the solve commands wrote to.  Covers test.sh (shell) and
                 # test_outputs.py (Python).
-                app_dir = self.tool._config.working_dir  # type: ignore[attr-defined]
-                sed_expr = (
-                    f"s|/logs/verifier|{self._logs_verifier_dir}|g;"
-                    f"s|/tests/|{self._tests_dir}/|g;"
-                    f"s|/tests |{self._tests_dir} |g;"
-                    + (f"s|/app/|{app_dir}/|g;s|/app|{app_dir}|g;" if app_dir != "/app" else "")
-                )
-                self.tool.bash(
-                    f"find {self._tests_dir} -type f \\( -name '*.sh' -o -name '*.py' \\) "
-                    f"-exec sed -i '{sed_expr}' {{}} +"
+                self._rewrite_app_paths(
+                    self._tests_dir,
+                    extra_subs={
+                        "/logs/verifier": self._logs_verifier_dir,
+                        "/tests/": self._tests_dir + "/",
+                        "/tests ": self._tests_dir + " ",
+                    },
                 )
                 self.tool.bash(f"chmod +x {self._tests_dir}/test.sh")
 
@@ -207,6 +215,33 @@ class TerminalBenchTask(Task):
             "test_results": test_results,
             "output_preview": output[:1000] if output else "",
         }
+
+    def _rewrite_app_paths(self, target_dir: str, extra_subs: dict[str, str] | None = None) -> None:
+        """Rewrite hardcoded '/app' → actual working_dir in *.sh/*.py under ``target_dir``.
+
+        Terminal-Bench task scripts (solve.sh, test.sh, test_outputs.py) often
+        hardcode ``/app`` because that's the image's canonical working dir.
+        When we relocate to ``/tmp/app`` for unprivileged backends, those
+        hardcoded paths break silently — git fails with "no such path",
+        pytest sees unmodified files, reward=0.
+        """
+        assert isinstance(self.tool, TerminalBenchTool)
+        app_dir = self.tool._config.working_dir  # type: ignore[attr-defined]
+        parts: list[str] = []
+        for k, v in (extra_subs or {}).items():
+            parts.append(f"s|{k}|{v}|g;")
+        if app_dir != "/app":
+            # ONLY rewrite '/app/' (with trailing slash) — doing a bare '/app'
+            # replacement would re-match the '/app' substring inside the already-
+            # rewritten '{app_dir}/' producing e.g. '/tmp/tmp/app/'.  All real
+            # test-file occurrences carry a trailing '/' (path prefixes).
+            parts.append(f"s|/app/|{app_dir}/|g;")
+        if not parts:
+            return
+        self.tool.bash(
+            f"find {target_dir} -type f \\( -name '*.sh' -o -name '*.py' \\) "
+            f"-exec sed -i '{''.join(parts)}' {{}} +"
+        )
 
     def _ensure_uv_preinstalled(self) -> None:
         """Pre-install ``uv`` so test.sh's ``source $HOME/.local/bin/env`` works.
