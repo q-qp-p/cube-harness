@@ -70,6 +70,9 @@ modal = [
     "swebench-verified-cube",
     "swebench-live-cube",
 ]
+dev = [
+    "pytest-xdist>=3.8.0",
+]
 
 [tool.uv.sources]
 # Local path pin for cube-standard unblocks pre-release changes to core (e.g.

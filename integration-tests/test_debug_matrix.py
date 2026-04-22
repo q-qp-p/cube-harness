@@ -111,8 +111,23 @@ _INFRAS: list[tuple[str, Callable[[], InfraConfig], Callable[[], bool], str]] = 
 ]
 
 
+# (cube, infra) combinations that don't pass end-to-end for reasons outside
+# this migration's scope.  Keep the entries in the matrix so the gap stays
+# visible in CI output; mark them xfail with a concrete reason.
+_KNOWN_XFAIL: dict[tuple[str, str], str] = {
+    # terminal-bench task images ship a test.sh that `curl`s
+    # https://astral.sh/.../install.sh to bootstrap uv + pytest.  Daytona's
+    # default sandbox network policy and EAI's cluster network both drop or
+    # reset that connection intermittently, so evaluate() produces reward=0
+    # despite solve.sh running correctly.  Fix belongs upstream in terminal-
+    # bench-2 (pre-bake uv into the task image) — see xfail on both combos.
+    ("terminalbench", "daytona"): "test.sh outbound install fails on Daytona sandbox network",
+    ("terminalbench", "toolkit"): "test.sh outbound install fails on EAI cluster network",
+}
+
+
 def _build_matrix() -> list[pytest.param]:
-    """Yield (cube, infra) pytest.param entries with skips for missing prerequisites."""
+    """Yield (cube, infra) pytest.param entries with skips/xfails applied."""
     params = []
     for cube_name, cube_mod in _CUBES:
         for infra_name, factory, ready_check, skip_reason in _INFRAS:
@@ -120,6 +135,8 @@ def _build_matrix() -> list[pytest.param]:
             marks = []
             if not ready_check():
                 marks.append(pytest.mark.skip(reason=skip_reason))
+            elif (cube_name, infra_name) in _KNOWN_XFAIL:
+                marks.append(pytest.mark.xfail(reason=_KNOWN_XFAIL[(cube_name, infra_name)], strict=False))
             params.append(pytest.param(cube_mod, factory, id=test_id, marks=marks))
     return params
 
