@@ -38,9 +38,10 @@ def _maybe_relocate_app(container, tool_config: TerminalBenchToolConfig) -> Term
     logger.info("%s not writable by runtime user — copying to %s", wd, new_wd)
     container.exec(
         f"cp -a {wd} {new_wd} && "
-        # git repos under /app need safe.directory to work as the new user.
-        f"find {new_wd} -type d -name .git -exec git config --global --add safe.directory "
-        f"$(dirname {{}}) \\; 2>/dev/null || true",
+        # Git refuses to run in dirs whose ownership differs from the caller
+        # ('dubious ownership' warning).  '*' disables the check globally —
+        # safe in this test-runner context.
+        "git config --global --add safe.directory '*'",
         timeout=300,
     )
     return tool_config.model_copy(update={"working_dir": new_wd})
