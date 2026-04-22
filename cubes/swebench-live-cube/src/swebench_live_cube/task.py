@@ -169,7 +169,10 @@ class SWEBenchLiveTask(Task):
         outputs = []
         for cmd in test_cmds:
             full_cmd = f"{CONDA_ACTIVATE} && cd /testbed && {cmd}"
-            output = self.tool.bash_unlimited(full_cmd, timeout=timeout)
+            # bash_long_running uses background+poll on Toolkit to avoid the
+            # eai CLI response-delivery hang on pytest; no-op (plain exec) on
+            # Local / Daytona / Modal.
+            output = self.tool.bash_long_running(full_cmd, timeout=timeout)
             outputs.append(output)
         return "\n".join(outputs)
 

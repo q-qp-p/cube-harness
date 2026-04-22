@@ -69,6 +69,26 @@ class SWEBenchTool(Tool):
         """Like bash() but without output truncation — for internal use (e.g. evaluate())."""
         return self._run_bash(command, timeout=timeout)
 
+    def bash_long_running(self, command: str, timeout: int) -> str:
+        """Run a minute-scale command via the backend's long-running-safe path.
+
+        See SWEBenchTool.bash_long_running in swebench-verified-cube for rationale
+        (background+poll on Toolkit, plain exec elsewhere).
+        """
+        result = self._container.exec_long_running(
+            command, timeout=timeout, workdir=self._config.working_dir,
+        )
+        parts = []
+        if result.stdout:
+            parts.append(result.stdout)
+        if result.stderr:
+            parts.append(result.stderr)
+        if result.exit_code == 124:
+            parts.append(f"[error] Command timed out after {timeout}s")
+        elif result.exit_code != 0:
+            parts.append(f"[exit_code: {result.exit_code}]")
+        return "\n".join(parts) if parts else "(no output)"
+
     @tool_action
     def read_file(self, path: str) -> str:
         """Read the contents of a file in the sandbox."""

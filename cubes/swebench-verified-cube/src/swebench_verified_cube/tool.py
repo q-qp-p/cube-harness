@@ -69,6 +69,28 @@ class SWEBenchTool(Tool):
         """Like bash() but without output truncation — for internal use (e.g. evaluate())."""
         return self._run_bash(command, timeout=timeout)
 
+    def bash_long_running(self, command: str, timeout: int) -> str:
+        """Run a command expected to take minutes (pytest, builds …) via the backend's
+        long-running-safe path.  For backends whose exec primitive has reliability
+        issues on multi-minute commands (notably Toolkit), this uses a background+poll
+        pattern so each underlying RPC call is short and retry-safe.  For backends
+        where exec is reliable (Local / Daytona / Modal), this is equivalent to
+        bash_unlimited().
+        """
+        result = self._container.exec_long_running(
+            command, timeout=timeout, workdir=self._config.working_dir,
+        )
+        parts = []
+        if result.stdout:
+            parts.append(result.stdout)
+        if result.stderr:
+            parts.append(result.stderr)
+        if result.exit_code == 124:
+            parts.append(f"[error] Command timed out after {timeout}s")
+        elif result.exit_code != 0:
+            parts.append(f"[exit_code: {result.exit_code}]")
+        return "\n".join(parts) if parts else "(no output)"
+
     @tool_action
     def read_file(self, path: str) -> str:
         """Read the contents of a file in the sandbox."""
