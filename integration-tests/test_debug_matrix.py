@@ -123,13 +123,11 @@ _KNOWN_XFAIL: dict[tuple[str, str], str] = {
     # bench-2 (pre-bake uv into the task image).
     ("terminalbench", "daytona"): "test.sh outbound install fails on Daytona sandbox network",
     ("terminalbench", "toolkit"): "test.sh outbound install fails on EAI cluster network",
-    # SWE-bench cubes embed patches as multi-KB base64 in a shell arg
-    # (``echo <b64> | base64 -d > /tmp/patch``).  ``eai job exec`` hangs
-    # indefinitely on payloads past ~1-2 KB — cube's subprocess buffer gets
-    # stuck in the CLI's I/O loop.  Proper fix is a typed Container.write_file
-    # abstraction (proposed in openspec change `resource-convergence`).
-    ("swebench_verified", "toolkit"): "eai exec hangs on multi-KB shell-arg patch payload (flaky)",
-    ("swebench_live", "toolkit"): "eai exec hangs on multi-KB shell-arg patch payload (flaky)",
+    # NOTE: swebench-*-toolkit previously xfailed due to eai CLI hangs.
+    # Empirical probe showed 6% per-call hang rate (bursty).  _run_eai now
+    # retries on hang with 5s + 10s backoff, which should push task-level
+    # success to ~99.6%.  Removed from xfail list; if they regress in CI,
+    # re-add with a pointer to this history.
 }
 
 
