@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 from collections.abc import Callable
 from types import ModuleType
 
@@ -70,7 +71,10 @@ def _daytona_infra() -> InfraConfig:
 def _toolkit_infra() -> InfraConfig:
     from cube_infra_toolkit import ToolkitInfraConfig
 
-    return ToolkitInfraConfig()
+    eai_path = shutil.which("eai") or next(
+        (p for p in _EAI_CANDIDATE_PATHS if os.path.isfile(p)), "eai"
+    )
+    return ToolkitInfraConfig(eai_path=eai_path)
 
 
 def _modal_infra() -> InfraConfig:
@@ -83,17 +87,37 @@ def _modal_infra() -> InfraConfig:
 
 
 def _has_docker() -> bool:
-    """Docker daemon reachable — either DOCKER_HOST is set or the default socket exists."""
-    return bool(os.environ.get("DOCKER_HOST")) or os.path.exists("/var/run/docker.sock")
+    """Docker daemon reachable — probe with `docker ps -q` to catch misconfigured DOCKER_HOST."""
+    try:
+        subprocess.run(
+            ["docker", "ps", "-q"],
+            capture_output=True,
+            check=True,
+            timeout=5,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def _has_daytona() -> bool:
     return bool(os.environ.get("DAYTONA_API_KEY"))
 
 
+_EAI_CANDIDATE_PATHS: list[str] = [
+    os.path.expanduser("~/bin/eai"),
+    os.path.expanduser("~/.local/bin/eai"),
+    "/usr/local/bin/eai",
+]
+
+
 def _has_toolkit() -> bool:
-    """eai CLI on PATH and an EAI_PROFILE in the environment."""
-    return shutil.which("eai") is not None and bool(os.environ.get("EAI_PROFILE"))
+    """eai CLI reachable (PATH or common install locations) and EAI_PROFILE set."""
+    if not bool(os.environ.get("EAI_PROFILE")):
+        return False
+    if shutil.which("eai") is not None:
+        return True
+    return any(os.path.isfile(p) for p in _EAI_CANDIDATE_PATHS)
 
 
 def _has_modal() -> bool:
@@ -132,6 +156,10 @@ _KNOWN_XFAIL: dict[tuple[str, str], str] = {
     # for this PR.  The swebench-*-toolkit images all have python3 and do
     # not hit this limitation.
     ("terminalbench", "toolkit"): "overfull-hbox image lacks python3 + curl; sidecar can't bootstrap",
+    # Same root cause as toolkit: overfull-hbox is a bare LaTeX image with no
+    # python3 or uv; ModalContainer.exec() succeeds but the test runner inside
+    # the container can't be bootstrapped so evaluate() returns reward=0.
+    ("terminalbench", "modal"): "overfull-hbox image lacks python3; test runner can't bootstrap",
     # swebench-*-toolkit: images chown /testbed to root (not the runtime
     # 'toolkit' uid).  Fix: SWEBenchTask.model_post_init now detects a
     # read-only working_dir and copies to /tmp/testbed (cp -a preserves
