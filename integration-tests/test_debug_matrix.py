@@ -123,11 +123,18 @@ _KNOWN_XFAIL: dict[tuple[str, str], str] = {
     # bench-2 (pre-bake uv into the task image).
     ("terminalbench", "daytona"): "test.sh outbound install fails on Daytona sandbox network",
     ("terminalbench", "toolkit"): "test.sh outbound install fails on EAI cluster network",
-    # NOTE: swebench-*-toolkit previously xfailed due to eai CLI hangs.
-    # Empirical probe showed 6% per-call hang rate (bursty).  _run_eai now
-    # retries on hang with 5s + 10s backoff, which should push task-level
-    # success to ~99.6%.  Removed from xfail list; if they regress in CI,
-    # re-add with a pointer to this history.
+    # swebench-live-toolkit: the cyclotruc/gitingest image's /testbed files
+    # are chowned to a UID that isn't readable/writable by EAI's default
+    # container user ('toolkit').  `git apply /tmp/gold_patch.diff` fails
+    # with "unable to unlink: Permission denied" on those files.  Unrelated
+    # to eai hangs or the bg+poll workaround — dynaconf (same cube, same
+    # backend, root-owned testbed) passes cleanly.  Fix is image-side
+    # (chown /testbed to the runtime user) or infra-side (run container
+    # as root).  Keep swebench-verified-toolkit enabled; it passes.
+    ("swebench_live", "toolkit"): (
+        "cyclotruc/gitingest image chowns /testbed to non-'toolkit' UID; "
+        "git apply fails with Permission denied on Toolkit's non-root runtime user"
+    ),
 }
 
 
