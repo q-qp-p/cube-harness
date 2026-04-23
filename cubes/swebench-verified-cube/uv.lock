@@ -262,7 +262,7 @@ wheels = [
 [[package]]
 name = "cube-standard"
 version = "0.1.0rc5"
-source = { git = "https://github.com/The-AI-Alliance/cube-standard?branch=task-metadata#10167a40f0dc3145309fb671c0863eb97f866df4" }
+source = { git = "https://github.com/The-AI-Alliance/cube-standard?branch=feat%2Fdaytona-infra-config#21cc3666cdcc4751f2fc37f65e023da39fb4ac44" }
 dependencies = [
     { name = "docstring-parser" },
     { name = "fastapi" },
@@ -1335,13 +1335,8 @@ name = "swebench-verified-cube"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "cube-standard" },
-    { name = "datasets" },
-]
-
-[package.optional-dependencies]
-debug = [
     { name = "cube-standard", extra = ["docker"] },
+    { name = "datasets" },
 ]
 
 [package.dev-dependencies]
@@ -1351,8 +1346,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cube-standard", git = "https://github.com/The-AI-Alliance/cube-standard?branch=task-metadata" },
-    { name = "cube-standard", extras = ["docker"], marker = "extra == 'debug'", git = "https://github.com/The-AI-Alliance/cube-standard?branch=task-metadata" },
+    { name = "cube-standard", extras = ["docker"], git = "https://github.com/The-AI-Alliance/cube-standard?branch=feat%2Fdaytona-infra-config" },
     { name = "datasets" },
 ]
 
