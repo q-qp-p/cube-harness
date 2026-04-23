@@ -11,9 +11,9 @@ dependencies = [
 
 [tool.uv]
 # Override transitive `cube-standard` URL so that packages pulled from PyPI
-# (e.g. `cube-vm-backend` via `osworld-cube`) defer to our local path pin.
+# (e.g. `cube-vm-backend` via `osworld-cube`) defer to our pin below.
 override-dependencies = [
-    "cube-standard @ file:///${PROJECT_ROOT}/../../cube-standard",
+    "cube-standard @ git+https://github.com/The-AI-Alliance/cube-standard.git@feat/daytona-infra-config",
 ]
 # Each backend's dependency tree (aws/azure/daytona) pulls different transitive
 # constraints; declaring them as conflicts lets uv resolve one group at a time.
@@ -93,17 +93,16 @@ markers = [
 ]
 
 [tool.uv.sources]
-# Local path pin for cube-standard unblocks pre-release changes to core (e.g.
-# LocalDockerServiceHandle.container).  Drop once an rc6 is published.
-cube-standard = { path = "../../cube-standard", editable = true }
-# aws/azure/daytona all come from the same local cube-standard workspace so their
-# `cube-standard` transitive dep resolves to the same URL (avoids uv conflicts).
-cube-infra-aws = { path = "../../cube-standard/cube-resources/cube-infra-aws", editable = true }
-cube-infra-azure = { path = "../../cube-standard/cube-resources/cube-infra-azure", editable = true }
-cube-infra-daytona = { path = "../../cube-standard/cube-resources/cube-infra-daytona", editable = true }
-cube-infra-toolkit = { path = "../../cube-standard/cube-resources/cube-infra-toolkit", editable = true }
-cube-infra-modal = { path = "../../cube-standard/cube-resources/cube-infra-modal", editable = true }
-cube-vm-backend = { path = "../../cube-standard/cube-resources/cube-vm-backend", editable = true }
+# Temporary git pin so CI (single-repo checkout) can resolve cube-standard.
+# Swap back to `path = "../../cube-standard"` for local editable dev, or drop
+# entirely once an rc6 is published on PyPI.
+cube-standard = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config" }
+cube-infra-aws = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-infra-aws" }
+cube-infra-azure = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-infra-azure" }
+cube-infra-daytona = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-infra-daytona" }
+cube-infra-toolkit = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-infra-toolkit" }
+cube-infra-modal = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-infra-modal" }
+cube-vm-backend = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-vm-backend" }
 osworld-cube = { path = "../cubes/osworld-cube", editable = true }
 webarena-verified-cube = { path = "../cubes/webarena-verified", editable = true }
 terminalbench-cube = { path = "../cubes/terminalbench-cube", editable = true }
