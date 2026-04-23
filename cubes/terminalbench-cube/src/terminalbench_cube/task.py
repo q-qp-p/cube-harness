@@ -328,7 +328,9 @@ class TerminalBenchTask(Task):
             cmd = (
                 "export HOME=/tmp/fakehome && "
                 "mkdir -p $HOME/.local/bin && "
-                "python3 -m pip install --quiet --target /tmp/uv_pkg uv && "
+                # --trusted-host covers images where ca-certificates is absent (e.g. bare LaTeX)
+                "python3 -m pip install --quiet --target /tmp/uv_pkg "
+                "--trusted-host pypi.org --trusted-host files.pythonhosted.org uv && "
                 "cp /tmp/uv_pkg/bin/uv /tmp/uv_pkg/bin/uvx $HOME/.local/bin/ && "
                 "printf 'export PATH=\"$HOME/.local/bin:$PATH\"\\n' > $HOME/.local/bin/env"
             )
