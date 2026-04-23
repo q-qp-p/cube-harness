@@ -1,23 +1,16 @@
 """Reusable debug-suite harness for per-task-container cubes.
 
-Parameterises the ``(benchmark class, InfraConfig)`` pair so one test per
-(cube, infra) combination is a ~5-line wiring step.
-
 Expected cube module shape
----------------------------
-The cube's ``debug`` module must expose:
-
-- ``get_debug_benchmark(infra: InfraConfig) -> Benchmark`` — returns a ready-to-run
-  benchmark already scoped to the debug subset and already ``.setup()``-ed.
-- ``make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]``
-- ``_TASK_ACTIONS: dict[str, list[Action]]`` — drives which tasks run.
-
-Run one task through the full ``reset → step*→ evaluate`` loop, assert reward==1.0.
+--------------------------
+- ``get_debug_benchmark(infra) -> Benchmark``
+- ``make_debug_agent(task_id) -> agent callable``
+- ``_TASK_ACTIONS: dict[str, list[Action]]``
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from types import ModuleType
 from typing import Any
 
@@ -26,34 +19,76 @@ from cube.testing import run_debug_episode
 
 logger = logging.getLogger(__name__)
 
+# Per-task wall-clock timeout in seconds.  Raised as a pytest failure (not a
+# hang) so the matrix keeps running.  Local Docker tasks take ~60-90s;
+# cloud tasks (Toolkit/Daytona) take up to ~5 min including job startup.
+_TASK_TIMEOUT_SECONDS = 600
 
-def run_debug_on(cube_debug_module: ModuleType, infra: InfraConfig, *, max_steps: int = 20) -> list[dict[str, Any]]:
-    """Run every debug task in ``cube_debug_module`` against the given infra.
 
-    Asserts per-task: no error, ``done=True``, ``reward == 1.0``. Returns the
-    list of per-episode reports (mirrors ``run_debug_suite`` schema).
+def run_debug_task(
+    cube_debug_module: ModuleType,
+    task_id: str,
+    infra: InfraConfig,
+    *,
+    max_steps: int = 20,
+    timeout: int = _TASK_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Run a single debug task end-to-end and return the episode result dict.
+
+    The result dict has keys: task_id, reward, done, error (mirrors
+    run_debug_suite schema).  Raises TimeoutError if the task exceeds
+    ``timeout`` seconds — this surfaces as a pytest FAILED rather than a hang.
     """
+    import threading
+
     bench = cube_debug_module.get_debug_benchmark(infra=infra)
-    # subset_from_list resets PrivateAttrs per spec — re-run setup() on the subset
-    # so _runtime_context is repopulated (including the "infra" key).
     bench.setup()
-    try:
-        results: list[dict[str, Any]] = []
-        for tc in bench.get_task_configs():
-            logger.info("Running debug task %r on %s", tc.task_id, infra.fingerprint())
+
+    result: dict[str, Any] = {}
+    exc_holder: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            task_configs = [tc for tc in bench.get_task_configs() if tc.task_id == task_id]
+            if not task_configs:
+                raise ValueError(f"Task {task_id!r} not found in benchmark debug subset")
+            tc = task_configs[0]
             task = tc.make(runtime_context=bench._runtime_context)
             try:
-                result = run_debug_episode(
-                    task,
-                    cube_debug_module.make_debug_agent(tc.task_id),
-                    max_steps=max_steps,
+                logger.info("START  task=%r  infra=%s", task_id, infra.fingerprint())
+                t0 = time.monotonic()
+                result.update(
+                    run_debug_episode(
+                        task,
+                        cube_debug_module.make_debug_agent(task_id),
+                        max_steps=max_steps,
+                    )
+                )
+                elapsed = time.monotonic() - t0
+                logger.info(
+                    "FINISH task=%r  reward=%s  done=%s  elapsed=%.1fs",
+                    task_id,
+                    result.get("reward"),
+                    result.get("done"),
+                    elapsed,
                 )
             finally:
                 task.close()
-            results.append(result)
-            assert not result["error"], f"Task {tc.task_id!r} errored: {result['error']}"
-            assert result["done"], f"Task {tc.task_id!r} did not complete (reward={result['reward']})"
-            assert result["reward"] == 1.0, f"Task {tc.task_id!r} reward={result['reward']} (expected 1.0)"
-        return results
+        except BaseException as e:
+            exc_holder.append(e)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    try:
+        thread.start()
+        thread.join(timeout=timeout)
     finally:
         bench.close()
+
+    if thread.is_alive():
+        raise TimeoutError(
+            f"Task {task_id!r} on {infra.fingerprint()} exceeded {timeout}s timeout — "
+            "still running in background thread (daemon, will be killed on process exit)"
+        )
+    if exc_holder:
+        raise exc_holder[0]
+    return result

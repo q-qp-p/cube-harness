@@ -60,8 +60,8 @@ jobs:
         working-directory: integration-tests
         run: >-
           uv run --group local --group dev pytest test_debug_matrix.py
-          -v --tb=short
-          -k "${{ matrix.cube }}--local"
+          -v --tb=short --log-cli-level=INFO
+          -k "${{ matrix.cube }} and local"
 
       - name: Docker containers after run
         if: always()
