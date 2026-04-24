@@ -4,22 +4,16 @@ version = "0.1.0"
 description = "End-to-end integration tests for CUBE infra backends + benchmark cubes"
 requires-python = ">=3.12"
 dependencies = [
-    "cube-standard",
+    "cube-standard>=0.1.0rc6",
     "pytest>=8.0",
     "tenacity>=9.1.4",
 ]
 
 [tool.uv]
-# Override transitive `cube-standard` URL so that packages pulled from PyPI
-# (e.g. `cube-vm-backend` via `osworld-cube`) defer to our pin below.
-override-dependencies = [
-    "cube-standard @ git+https://github.com/The-AI-Alliance/cube-standard.git@feat/daytona-infra-config",
-]
 # Each backend's dependency tree (aws/azure/daytona) pulls different transitive
 # constraints; declaring them as conflicts lets uv resolve one group at a time.
-# aws/azure groups conflict with the local-path-pinned `cube-standard` used by
-# local/daytona/toolkit (they pull it from git via osworld-cube/webarena).  The
-# three local groups share the same local cube-standard and can coexist.
+# aws/azure are the widest trees and can't be resolved simultaneously with the
+# single-infra groups.
 conflicts = [
     [{group = "aws"}, {group = "local"}],
     [{group = "aws"}, {group = "daytona"}],
@@ -93,16 +87,16 @@ markers = [
 ]
 
 [tool.uv.sources]
-# Temporary git pin so CI (single-repo checkout) can resolve cube-standard.
-# Swap back to `path = "../../cube-standard"` for local editable dev, or drop
-# entirely once an rc6 is published on PyPI.
-cube-standard = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config" }
-cube-infra-aws = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-infra-aws" }
-cube-infra-azure = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-infra-azure" }
-cube-infra-daytona = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-infra-daytona" }
-cube-infra-toolkit = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-infra-toolkit" }
-cube-infra-modal = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-infra-modal" }
-cube-vm-backend = { git = "https://github.com/The-AI-Alliance/cube-standard.git", branch = "feat/daytona-infra-config", subdirectory = "cube-resources/cube-vm-backend" }
+# cube-standard comes from PyPI via the version pin in [project].dependencies.
+# The cube-infra-* and cube-vm-backend packages are not yet on PyPI, so we pull
+# them from the cube-standard repo (default branch: main). Drop each entry here
+# once the corresponding package is published to PyPI.
+cube-infra-aws = { git = "https://github.com/The-AI-Alliance/cube-standard.git", subdirectory = "cube-resources/cube-infra-aws" }
+cube-infra-azure = { git = "https://github.com/The-AI-Alliance/cube-standard.git", subdirectory = "cube-resources/cube-infra-azure" }
+cube-infra-daytona = { git = "https://github.com/The-AI-Alliance/cube-standard.git", subdirectory = "cube-resources/cube-infra-daytona" }
+cube-infra-toolkit = { git = "https://github.com/The-AI-Alliance/cube-standard.git", subdirectory = "cube-resources/cube-infra-toolkit" }
+cube-infra-modal = { git = "https://github.com/The-AI-Alliance/cube-standard.git", subdirectory = "cube-resources/cube-infra-modal" }
+cube-vm-backend = { git = "https://github.com/The-AI-Alliance/cube-standard.git", subdirectory = "cube-resources/cube-vm-backend" }
 osworld-cube = { path = "../cubes/osworld-cube", editable = true }
 webarena-verified-cube = { path = "../cubes/webarena-verified", editable = true }
 terminalbench-cube = { path = "../cubes/terminalbench-cube", editable = true }
