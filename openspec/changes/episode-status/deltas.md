@@ -42,30 +42,34 @@ the worker died before the episode could initialise — treat as retriable.
 
 ## experiment/spec.md
 
-### REMOVED — `_is_trajectory_successful`
+### REMOVED — `_is_trajectory_successful`, `_load_successful_trajectory_ids`
 
-Replaced entirely by status file check. Trajectory deserialization is no longer part
-of the retry decision path.
+Replaced by `_load_episode_statuses` which reads only `status.json` per episode
+directory. No trajectory deserialization in the retry decision path.
 
 ### MODIFIED — Resume / retry semantics table
 
 | `resume` | `retry_failed` | Episodes returned |
 |----------|----------------|-------------------|
 | False    | False          | All episodes from scratch |
-| True     | False          | Episodes with no `status.json` or `status == STALE` — i.e. unstarted or abandoned |
-| False    | True           | Episodes with `status IN (FAILED, CANCELLED, STALE)` or missing `status.json`, AND `retry_count < max_retries` |
-| True     | True           | Unstarted ∪ failed/cancelled |
+| True     | False          | Episodes with no `status.json` (never started) |
+| False    | True           | Episodes with `status IN (FAILED, STALE, CANCELLED)` or missing `status.json`, AND `retry_count < max_retries` |
+| True     | True           | Union of the above two |
 
 ### ADDED — `max_retries: int = 3` field on `Experiment`
 
 Controls how many times a failed episode is retried. Episodes at `retry_count >= max_retries`
-are reported as permanently failed and skipped.
+are reported as permanently failed and excluded from future runs.
 
-### MODIFIED — `_load_completed_trajectory_ids` (replaces `_load_successful_trajectory_ids`)
+### ADDED — `max_retry_rounds: int = 1` parameter on `run_with_ray` and `run_sequentially`
 
-Reads only `status.json` per episode directory. No trajectory deserialization.
+After the main run completes, the runner checks for retriable episodes. If any exist
+and `retry_rounds < max_retry_rounds`, it runs again with `retry_failed=True` on the
+same output directory. The loop repeats until no retriable episodes remain or
+`max_retry_rounds` is exhausted. The final `ExpResult` aggregates all rounds.
 
-Stale RUNNING detection: `now - last_heartbeat_at > 120` seconds.
+This allows a single `run_with_ray(exp)` call to automatically recover from transient
+failures without caller intervention.
 
 ---
 

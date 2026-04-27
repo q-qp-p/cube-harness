@@ -117,18 +117,66 @@ before the trajectory object exists).
 
 Atomic write (write-then-rename) ensures a reader never sees a partial file.
 
-### Changes to `Experiment`
+### Migration: `Experiment.get_episodes_to_run()`
 
-`_is_trajectory_successful` and `_load_successful_trajectory_ids` are replaced by:
+Current code path (to be replaced):
+
+```
+_load_started_trajectory_ids()        # scans episodes/ dir for existing trajectories
+_load_successful_trajectory_ids()     # loads every trajectory and scans steps for StepError
+_find_episodes_to_relaunch()          # filters config files by trajectory ID sets
+```
+
+Replacement:
+
+```
+_load_episode_statuses()              # reads status.json from each episode dir — one small file each
+get_episodes_to_run()                 # filters directly on status: retry if FAILED/STALE/CANCELLED/missing
+```
+
+`_is_trajectory_successful` and `_load_successful_trajectory_ids` are deleted.
+`_load_started_trajectory_ids` is replaced by `_load_episode_statuses`.
+`_find_episodes_to_relaunch` logic is absorbed into `get_episodes_to_run`.
+
+The `resume` / `retry_failed` flags on `Experiment` map to status as follows:
+
+| Flag | Episodes returned |
+|---|---|
+| neither | All episodes created from scratch |
+| `resume=True` | Episodes with no `status.json` (never started) |
+| `retry_failed=True` | Episodes with `status IN (FAILED, STALE, CANCELLED)` and `retry_count < max_retries` |
+| both | Union of the above |
+
+`allow_overwrite = True` is set on retried episodes, same as today.
+
+### Automatic retry loop in `exp_runner`
+
+Today the caller must explicitly set `retry_failed=True` and re-run to pick up
+failures. The launcher should support an automatic retry loop so a single invocation
+can recover from transient failures without human intervention:
 
 ```python
-def _load_completed_trajectory_ids(self, storage: FileStorage) -> set[str]:
-    # Reads only status.json per episode directory — no trajectory deserialization
+def run_with_ray(
+    exp: Experiment,
+    ...
+    max_retry_rounds: int = 1,   # NEW: how many post-run retry sweeps to attempt
+) -> ExpResult:
 ```
+
+After the main Ray run completes, the runner checks for `FAILED`/`STALE`/`CANCELLED`
+episodes with `retry_count < max_retries`. If any exist and `retry_rounds < max_retry_rounds`,
+it marks the experiment `retry_failed=True` and runs again — reusing the same output
+directory. This loop repeats until no retriable episodes remain or `max_retry_rounds`
+is exhausted. The final `ExpResult` aggregates all rounds.
+
+`run_sequentially` gets the same `max_retry_rounds` parameter for consistency.
 
 ### Changes to `exp_runner`
 
-After `ray.cancel(force=True)`, write `status == CANCELLED` for that episode.
+After `ray.cancel(force=True)`, write `status=CANCELLED` for that episode.
+
+After `ray.shutdown()`, sweep all episode directories: any `RUNNING` episode with a
+stale heartbeat is written as `STALE`.
 
 ## Alternatives considered
 
