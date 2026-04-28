@@ -30,8 +30,8 @@ Before (no status file):
 
 After:
 1. Write `status=RUNNING` via `storage.write_episode_status()` before `setup_fn()`
-2. Start background heartbeat thread (30s interval, updates `last_heartbeat_at`)
-3. In `finally`: stop heartbeat thread; write `status=COMPLETED` or `status=FAILED`
+2. Write step-boundary heartbeat updates (`last_heartbeat_at`, `current_step`) from the worker main thread
+3. In `finally`: write terminal `status` (`COMPLETED`, `MAX_STEPS_REACHED`, or `FAILED`)
 
 ### INVARIANT
 
@@ -47,14 +47,16 @@ the worker died before the episode could initialise — treat as retriable.
 Replaced by `_load_episode_statuses` which reads only `status.json` per episode
 directory. No trajectory deserialization in the retry decision path.
 
-### MODIFIED — Resume / retry semantics table
+### MODIFIED — Resume and auto-retry semantics
 
-| `resume` | `retry_failed` | Episodes returned |
-|----------|----------------|-------------------|
-| False    | False          | All episodes from scratch |
-| True     | False          | Episodes with no `status.json` (never started) |
-| False    | True           | Episodes with `status IN (FAILED, STALE, CANCELLED)` or missing `status.json`, AND `retry_count < max_retries` |
-| True     | True           | Union of the above two |
+`Experiment.get_episodes_to_run()` is now status-driven and keyed off `resume`:
+
+| `resume` | Episodes returned |
+|----------|-------------------|
+| False    | All episodes from scratch |
+| True     | Episodes with no `status.json` (never started), plus retriable statuses (`FAILED`, `STALE`, `CANCELLED`) with `retry_count < max_retries` |
+
+In-flight statuses (`QUEUED`, `RUNNING`) are never returned. Terminal non-retriable statuses (`COMPLETED`, `MAX_STEPS_REACHED`) are skipped.
 
 ### ADDED — `max_retries: int = 3` field on `Experiment`
 
@@ -64,8 +66,8 @@ are reported as permanently failed and excluded from future runs.
 ### ADDED — `max_retry_rounds: int = 3` parameter on `run_with_ray` and `run_sequentially`
 
 After the main run completes, the runner checks for retriable episodes. If any exist
-and `retry_rounds < max_retry_rounds`, it runs again with `retry_failed=True` on the
-same output directory. The loop repeats until no retriable episodes remain or
+and `retry_rounds < max_retry_rounds`, it runs another retry round on the
+same output directory (`resume=True`). The loop repeats until no retriable episodes remain or
 `max_retry_rounds` is exhausted. The final `ExpResult` aggregates all rounds.
 
 This allows a single `run_with_ray(exp)` call to automatically recover from transient
