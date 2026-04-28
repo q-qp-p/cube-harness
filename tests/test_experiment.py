@@ -10,8 +10,8 @@ from cube.task import TaskMetadata
 
 from cube_harness.core import Trajectory, TrajectoryStep
 from cube_harness.episode import Episode
-from cube_harness.exp_runner import run_sequentially
 from cube_harness.episode_status import EpisodeStatus
+from cube_harness.exp_runner import run_sequentially
 from cube_harness.experiment import Experiment, ExpResult, sweep_stale_statuses
 from cube_harness.storage import FileStorage
 from tests.conftest import MockCubeBenchmark, MockCubeTaskConfig
@@ -321,7 +321,7 @@ class TestExperiment:
         assert len(resumed_episodes) == 2
 
     def test_run_sequentially(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
-        """run_sequentially completes all episodes and returns trajectories keyed by task_id."""
+        """run_sequentially completes all episodes and returns trajectories keyed by trajectory_id."""
         exp = Experiment(
             name="test_run_sequential",
             output_dir=tmp_dir,
@@ -331,8 +331,10 @@ class TestExperiment:
 
         result = run_sequentially(exp)
 
-        expected_task_ids = set(mock_cube_benchmark.task_metadata.keys())
-        assert set(result.trajectories.keys()) == expected_task_ids
+        expected_trajectory_ids = {
+            f"{ep.config.task_config.task_id}_ep{ep.config.id}" for ep in exp.get_episodes_to_run()
+        }
+        assert set(result.trajectories.keys()) == expected_trajectory_ids
         assert result.failures == {}
 
     def test_resume_and_retry_empty_when_all_succeeded(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
