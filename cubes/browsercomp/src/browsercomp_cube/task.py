@@ -1,4 +1,4 @@
-"""BrowseCompTask and BrowseCompTaskConfig for BrowseComp benchmark."""
+"""BrowseCompTask, BrowseCompTaskMetadata, and BrowseCompTaskConfig for BrowseComp benchmark."""
 
 import re
 from typing import Any
@@ -11,6 +11,7 @@ from cube.core import Observation
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Toolbox, ToolboxConfig
 
+from browsercomp_cube.crypto import decrypt
 from browsercomp_cube.tool import SubmitAnswerTool, SubmitAnswerToolConfig
 from cube_web_tool import BraveWebSearchToolConfig, WebFetchToolConfig
 
@@ -49,8 +50,24 @@ _FORMAT_INSTRUCTIONS = (
 )
 
 
+class BrowseCompTaskMetadata(TaskMetadata):
+    """TaskMetadata subclass for BrowseComp tasks.
+
+    Lightweight public fields shipped in task_metadata.json. The encrypted
+    problem/answer payload lives in the per-task execution cache populated by
+    BrowseCompBenchmark.install() and is decrypted at make() time.
+    """
+
+    topic: str = ""
+    """Coarse subject area (e.g. 'Art', 'Sports'). Mirrored into abstract_description."""
+
+
 class BrowseCompTask(Task):
     """A single BrowseComp information-retrieval task."""
+
+    metadata: BrowseCompTaskMetadata  # type: ignore[assignment]
+    problem: str
+    answer: str
 
     validate_per_step: bool = False
     accept_agent_stop: bool = True
@@ -59,9 +76,8 @@ class BrowseCompTask(Task):
 
     def reset(self) -> tuple[Observation, dict[str, Any]]:
         self.tool.reset()
-        problem = self.metadata.extra_info["problem"]
-        prompt = problem + _FORMAT_INSTRUCTIONS
-        return Observation.from_text(prompt), {"problem": problem}
+        prompt = self.problem + _FORMAT_INSTRUCTIONS
+        return Observation.from_text(prompt), {"problem": self.problem}
 
     def _call_grader(self, prompt: str, scorer_model: str) -> bool:
         completion = litellm.completion(
@@ -85,12 +101,10 @@ class BrowseCompTask(Task):
         if submitted is None:
             return 0.0, {"correct": False, "submitted": None, "reason": "No answer submitted"}
 
-        question = self.metadata.extra_info["problem"]
-        correct_answer = self.metadata.extra_info["answer"]
         prompt = _GRADER_TEMPLATE.format(
-            question=question,
+            question=self.problem,
             response=submitted,
-            correct_answer=correct_answer,
+            correct_answer=self.answer,
         )
 
         last_error: Exception | None = None
@@ -108,7 +122,12 @@ class BrowseCompTask(Task):
 
 
 class BrowseCompTaskConfig(TaskConfig):
-    """Serializable configuration that produces a BrowseCompTask."""
+    """Serializable configuration that produces a BrowseCompTask.
+
+    The encrypted record (problem, answer, canary) for ``task_id`` is loaded
+    from the per-task execution cache and decrypted in ``make()`` so the heavy
+    payload never crosses process boundaries inside the config object.
+    """
 
     scorer_model: str = "gpt-5.4-mini"
 
@@ -119,13 +138,20 @@ class BrowseCompTaskConfig(TaskConfig):
     ) -> BrowseCompTask:
         from browsercomp_cube.benchmark import BrowseCompBenchmark
 
-        task_metadata: TaskMetadata = BrowseCompBenchmark.task_metadata[self.task_id]
+        metadata = BrowseCompBenchmark.task_metadata[self.task_id]
+        encrypted = BrowseCompBenchmark.load_task_execution_info(self.task_id)
+        canary = encrypted["canary"]
+        problem = decrypt(encrypted["problem"], canary)
+        answer = decrypt(encrypted["answer"], canary)
+
         tool_cfg = self.tool_config or ToolboxConfig(
             tool_configs=[BraveWebSearchToolConfig(), WebFetchToolConfig(), SubmitAnswerToolConfig()]
         )
         return BrowseCompTask(
-            metadata=task_metadata,
+            metadata=metadata,
             tool_config=tool_cfg,
+            problem=problem,
+            answer=answer,
             scorer_model=self.scorer_model,
             container_backend=container_backend,
         )

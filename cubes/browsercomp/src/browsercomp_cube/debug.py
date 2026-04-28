@@ -8,44 +8,40 @@ make_debug_agent(task_id)     → DebugAgent
 
 from __future__ import annotations
 
-import csv
-import io
 import logging
-from importlib.resources import files
 from typing import ClassVar, Generator
 
 from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
 from cube.container import ContainerBackend
 from cube.core import Action, ActionSchema, Observation
-from cube.task import TaskConfig, TaskMetadata
+from cube.task import TaskConfig
 from cube.tool import ToolboxConfig
 
 from browsercomp_cube.benchmark import BrowseCompBenchmark
-from browsercomp_cube.crypto import decrypt
-from browsercomp_cube.task import BrowseCompTask, BrowseCompTaskConfig
+from browsercomp_cube.task import BrowseCompTask, BrowseCompTaskConfig, BrowseCompTaskMetadata
 from browsercomp_cube.tool import SubmitAnswerToolConfig
 
 logger = logging.getLogger(__name__)
 
-_DEBUG_CSV_PATH = files("browsercomp_cube.data") / "browse_comp_debug_set.csv"
+_DEBUG_RECORDS: list[dict[str, str]] = [
+    {"problem": "What is 2 + 2?", "answer": "4", "topic": "debug"},
+    {"problem": "What is the capital of France?", "answer": "Paris", "topic": "debug"},
+]
 
 
-def _load_debug_task_metadata() -> dict[str, TaskMetadata]:
-    metadata: dict[str, TaskMetadata] = {}
-    text = _DEBUG_CSV_PATH.read_text(encoding="utf-8")
-    for idx, row in enumerate(csv.DictReader(io.StringIO(text))):
-        canary = row["canary"]
-        problem = decrypt(row["problem"], canary)
-        answer = decrypt(row["answer"], canary)
-        topic = row.get("problem_topic", "")
-        task_id = f"browsecomp-debug-{idx:04d}"
-        metadata[task_id] = TaskMetadata(
-            id=task_id,
-            abstract_description=topic,
+def _debug_task_id(idx: int) -> str:
+    return f"browsecomp-debug-{idx:04d}"
+
+
+def _debug_task_metadata() -> dict[str, BrowseCompTaskMetadata]:
+    return {
+        _debug_task_id(i): BrowseCompTaskMetadata(
+            id=_debug_task_id(i),
             recommended_max_steps=5,
-            extra_info={"problem": problem, "answer": answer, "topic": topic},
+            topic=record["topic"],
         )
-    return metadata
+        for i, record in enumerate(_DEBUG_RECORDS)
+    }
 
 
 _TASK_ACTIONS: dict[str, list[Action]] = {
@@ -69,8 +65,7 @@ class DebugBrowseCompTask(BrowseCompTask):
 
     def _call_grader(self, prompt: str, scorer_model: str) -> bool:
         submitted = self._submit_tool().last_answer or ""
-        correct_answer = self.metadata.extra_info["answer"]
-        return correct_answer.lower() in submitted.lower()
+        return self.answer.lower() in submitted.lower()
 
 
 class DebugBrowseCompTaskConfig(BrowseCompTaskConfig):
@@ -81,11 +76,16 @@ class DebugBrowseCompTaskConfig(BrowseCompTaskConfig):
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> DebugBrowseCompTask:
-        task_metadata = DebugBrowseCompBenchmark.task_metadata[self.task_id]
+        idx = int(self.task_id.rsplit("-", 1)[-1])
+        record = _DEBUG_RECORDS[idx]
+
+        metadata = DebugBrowseCompBenchmark.task_metadata[self.task_id]
         tool_cfg = self.tool_config or ToolboxConfig(tool_configs=[SubmitAnswerToolConfig()])
         return DebugBrowseCompTask(
-            metadata=task_metadata,
+            metadata=metadata,
             tool_config=tool_cfg,
+            problem=record["problem"],
+            answer=record["answer"],
             scorer_model=self.scorer_model,
             container_backend=container_backend,
         )
@@ -95,8 +95,17 @@ class DebugBrowseCompBenchmark(BrowseCompBenchmark):
     """Lightweight debug benchmark — 2 tasks, no network calls."""
 
     benchmark_metadata: ClassVar[BenchmarkMetadata] = BrowseCompBenchmark.benchmark_metadata
-    task_metadata: ClassVar[dict[str, TaskMetadata]] = _load_debug_task_metadata()
+    task_metadata: ClassVar[dict[str, BrowseCompTaskMetadata]] = _debug_task_metadata()
     task_config_class: ClassVar[type[TaskConfig]] = DebugBrowseCompTaskConfig
+
+    @classmethod
+    def install(cls) -> None:
+        """Debug benchmark uses inline records — no installation needed."""
+        return
+
+    @classmethod
+    def uninstall(cls) -> None:
+        return
 
     def get_task_configs(self) -> Generator[DebugBrowseCompTaskConfig, None, None]:
         for tm in self.task_metadata.values():

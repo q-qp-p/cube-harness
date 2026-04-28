@@ -2,42 +2,23 @@
 
 import csv
 import io
+import json
 import logging
-from importlib.resources import files
-from typing import ClassVar, Generator
+import shutil
+import urllib.request
+from collections.abc import Generator
+from pathlib import Path
+from typing import ClassVar
 
 from cube.benchmark import Benchmark, BenchmarkMetadata
-from cube.task import TaskConfig, TaskMetadata
+from cube.task import TaskConfig
 
-from browsercomp_cube.crypto import decrypt
-from browsercomp_cube.task import BrowseCompTaskConfig
+from browsercomp_cube.task import BrowseCompTaskConfig, BrowseCompTaskMetadata
 
 logger = logging.getLogger(__name__)
 
-_CSV_PATH = files("browsercomp_cube.data") / "browse_comp_test_set.csv"
-
-
-def _load_task_metadata() -> dict[str, TaskMetadata]:
-    """Read and decrypt the BrowseComp CSV at import time.
-
-    Each row's problem and answer are XOR-decrypted using the per-row canary
-    string. Returns a dict mapping task IDs to TaskMetadata.
-    """
-    metadata: dict[str, TaskMetadata] = {}
-    text = _CSV_PATH.read_text(encoding="utf-8")
-    for idx, row in enumerate(csv.DictReader(io.StringIO(text))):
-        canary = row["canary"]
-        problem = decrypt(row["problem"], canary)
-        answer = decrypt(row["answer"], canary)
-        topic = row.get("problem_topic", "")
-        task_id = f"browsecomp-{idx:04d}"
-        metadata[task_id] = TaskMetadata(
-            id=task_id,
-            abstract_description=topic,
-            recommended_max_steps=50,
-            extra_info={"problem": problem, "answer": answer, "topic": topic},
-        )
-    return metadata
+_DATASET_URL = "https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv"
+_CSV_FILENAME = "browse_comp_test_set.csv"
 
 
 class BrowseCompBenchmark(Benchmark):
@@ -50,10 +31,64 @@ class BrowseCompBenchmark(Benchmark):
         num_tasks=1266,
         tags=["web-search", "information-retrieval"],
     )
-    task_metadata: ClassVar[dict[str, TaskMetadata]] = _load_task_metadata()
+    # Auto-loaded from task_metadata.json by Benchmark.__init_subclass__.
+    task_metadata: ClassVar[dict[str, BrowseCompTaskMetadata]]
     task_config_class: ClassVar[type[TaskConfig]] = BrowseCompTaskConfig
 
     scorer_model: str = "gpt-5.4-mini"
+
+    @classmethod
+    def install(cls) -> None:
+        """Download the encrypted dataset and split it into the per-task execution cache.
+
+        Downloads ``browse_comp_test_set.csv`` from the OpenAI public blob into
+        ``cache_dir()`` (idempotent), then writes one JSON file per task into
+        ``task_execution_cache_dir()`` containing the still-encrypted
+        ``{problem, answer, canary}`` triple. Decryption happens at task make()
+        time so cleartext never lands on disk.
+
+        The shipped task_metadata.json is a package resource and is not modified.
+        To regenerate task_metadata.json (developer use only), run
+        ``scripts/generate_task_metadata.py``.
+        """
+        exec_cache_dir = cls.task_execution_cache_dir()
+        if exec_cache_dir.exists() and any(exec_cache_dir.iterdir()):
+            logger.info("Execution cache already populated, skipping installation")
+            return
+        exec_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        csv_path = cls._download_dataset()
+        text = csv_path.read_text(encoding="utf-8")
+        n = 0
+        for idx, row in enumerate(csv.DictReader(io.StringIO(text))):
+            task_id = f"browsecomp-{idx:04d}"
+            (exec_cache_dir / f"{task_id}.json").write_text(
+                json.dumps({"problem": row["problem"], "answer": row["answer"], "canary": row["canary"]})
+            )
+            n += 1
+        logger.info("Wrote %d encrypted records to %s", n, exec_cache_dir)
+
+    @classmethod
+    def uninstall(cls) -> None:
+        """Remove the per-task execution cache and the cached source CSV."""
+        exec_cache_dir = cls.task_execution_cache_dir()
+        if exec_cache_dir.exists():
+            shutil.rmtree(exec_cache_dir)
+            logger.info("Removed execution cache at %s", exec_cache_dir)
+        csv_path = cls.cache_dir() / _CSV_FILENAME
+        if csv_path.exists():
+            csv_path.unlink()
+            logger.info("Removed cached dataset at %s", csv_path)
+
+    @classmethod
+    def _download_dataset(cls) -> Path:
+        """Download the source CSV into ``cache_dir()`` if not already present."""
+        csv_path = cls.cache_dir() / _CSV_FILENAME
+        if not csv_path.exists():
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.info("Downloading %s -> %s", _DATASET_URL, csv_path)
+            urllib.request.urlretrieve(_DATASET_URL, csv_path)
+        return csv_path
 
     def _setup(self) -> None:
         pass

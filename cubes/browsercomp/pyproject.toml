@@ -16,6 +16,9 @@ browsercomp-cube = "browsercomp_cube.benchmark:BrowseCompBenchmark"
 requires = ["uv_build>=0.8,<0.9"]
 build-backend = "uv_build"
 
+[tool.uv-build]
+include = ["src/browsercomp_cube/task_metadata.json"]
+
 [tool.ruff]
 fix = true
 line-length = 120
