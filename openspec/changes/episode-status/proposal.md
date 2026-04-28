@@ -360,6 +360,83 @@ viewer, sequential-mode debug experience.
 
 ---
 
+## Testing strategy
+
+### One Ray-based integration test, four scenarios
+
+A single `run_with_ray(...)` over a 4-task benchmark covers ~80% of the retry
+machinery in one shot. Each task exercises a distinct code path:
+
+| Episode | Scenario list | Final status | retry_count | Archived dirs |
+|---|---|---|---|---|
+| 0 — `task_succeed` | `["succeed"]` | `COMPLETED` | 0 | 0 |
+| 1 — `task_flaky` | `["fail", "fail", "succeed"]` | `COMPLETED` | 2 | 2 (both `FAILED`) |
+| 2 — `task_dead` | `["fail"] * 4` | `FAILED` (max_retries cap) | 3 | 3 |
+| 3 — `task_hang` | `["hang", "succeed"]` | `COMPLETED` | 1 | 1 (`CANCELLED`, `error_type="StepTimeout"`) |
+
+### Debug agent
+
+`tests/test_retry_integration.py::DebugAgent` reads
+`scenario[task_id][attempt_num]` from a per-test JSON file and:
+- `"succeed"` → returns `final_step` action
+- `"fail"` → raises `RuntimeError("scripted failure")`
+- `"hang"` → `time.sleep(step_timeout_s * 10)` (driver kills it)
+
+The agent atomically increments a per-task attempt counter (fcntl-locked file in
+`tmp_dir`) so retries see consecutive attempt numbers across worker processes.
+
+### Run config (tuned for fast tests)
+
+```python
+exp = Experiment(..., max_retries=3)
+result = run_with_ray(
+    exp,
+    n_cpus=2,
+    step_timeout_s=2.0,
+    cancel_grace_s=1.0,
+    max_retry_rounds=3,
+)
+```
+
+Target wall-clock: 30–60 s including Ray startup. Mark with `@pytest.mark.slow`
+(or `integration`).
+
+### Coverage matrix
+
+| Code path | Covered by integration test |
+|---|---|
+| Pre-claim writes `RUNNING` for all 4 episodes before Ray submit | ✅ |
+| Worker writes `RUNNING` → `COMPLETED` / `FAILED` | ✅ |
+| Step-boundary heartbeat | ✅ (hang scenario can't fire without it) |
+| Driver poll reads `status.json`, force-cancels on stale heartbeat | ✅ |
+| Driver writes `CANCELLED` after force-kill, with `error_type="StepTimeout"` | ✅ |
+| Auto-retry loop (`max_retry_rounds`) | ✅ |
+| `retry_count` increment on pre-claim | ✅ |
+| `max_retries` cap respected | ✅ (Episode 2 stops at 3) |
+| Archive of old attempts (`.archived_<ts>/`) preserved | ✅ |
+| `error_type` / `error_message` populated end-to-end | ✅ |
+| `current_step` advances | ✅ |
+| `COMPLETED` never retried | ✅ (Episode 0) |
+
+### Focused unit tests for what the integration test can't reach
+
+- `tests/test_experiment.py::test_stale_sweep_marks_orphaned_running` — write a
+  `RUNNING` status with a stale heartbeat by hand, call the sweep, assert
+  `status == STALE` and the episode shows up in `retry_failed=True` selection.
+- `tests/test_experiment.py::test_resume_returns_missing_status_only` — episode
+  configs exist, no `status.json`, `resume=True` returns them; `retry_failed=True`
+  also returns them when paired with the missing-status branch.
+- `tests/test_storage.py::test_episode_status_atomic_write` — interrupted writes
+  via `.tmp` sibling never expose a partial `status.json`.
+
+### Out of scope for v1 tests
+
+- **Concurrent-driver collision** — needs subprocess orchestration; documented as
+  out-of-scope for v1.
+- **Sequential-mode step timeout** — no driver-side enforcement in v1.
+
+---
+
 ## Resolved questions
 
 | # | Question | Decision |
