@@ -125,6 +125,33 @@ class Episode:
         agent = self.config.agent_config.make(action_set, task_id=self.config.task_config.task_id)
         return self._run_loop(setup_fn, step_fn, close_fn, agent)
 
+    def _open_status(self, trajectory_id: str) -> EpisodeStatus:
+        """Initialise `status.json` for this attempt.
+
+        If the prior status is terminal and this Episode opted in to overwrite
+        (a legitimate retry), archive the prior directory so its terminal
+        `status.json` survives. Without `allow_overwrite`, `save_trajectory`
+        will later raise — preserving the safety guard against accidental
+        double-runs.
+        """
+        prior = self.storage.read_episode_status(trajectory_id)
+        if prior is not None and prior.status in TERMINAL_STATUSES and self.allow_overwrite:
+            ep_dir = self.storage._episode_dir(trajectory_id)
+            if ep_dir.exists():
+                self.storage._archive_episode(ep_dir)
+        now = time.time()
+        ep_status = EpisodeStatus(
+            status="RUNNING",
+            task_id=self.config.task_config.task_id,
+            episode_id=self.config.id,
+            started_at=now,
+            last_heartbeat_at=now,
+            current_step=0,
+            retry_count=next_retry_count(prior),
+        )
+        self.storage.write_episode_status(trajectory_id, ep_status)
+        return ep_status
+
     def _run_loop(
         self,
         setup_fn: Callable[[], EnvironmentOutput],
@@ -137,26 +164,8 @@ class Episode:
         trajectory_id = trajectory_log_id(task_id, self.config.id)
         tracer = get_tracer(self.config.exp_name)
 
-        # Heartbeat 1: top of _run_loop (covers stuck setup_fn — env reset, container boot).
-        # If the prior status is terminal AND this Episode opted in to overwrite (a
-        # legitimate retry), archive the prior directory so its terminal status.json
-        # survives. Without `allow_overwrite`, save_trajectory will raise — preserving
-        # the existing safety guard against accidental double-runs.
-        prior = self.storage.read_episode_status(trajectory_id)
-        if prior is not None and prior.status in TERMINAL_STATUSES and self.allow_overwrite:
-            ep_dir = self.storage._episode_dir(trajectory_id)
-            if ep_dir.exists():
-                self.storage._archive_episode(ep_dir)
-        ep_status = EpisodeStatus(
-            status="RUNNING",
-            task_id=task_id,
-            episode_id=self.config.id,
-            started_at=time.time(),
-            last_heartbeat_at=time.time(),
-            current_step=0,
-            retry_count=next_retry_count(prior),
-        )
-        self.storage.write_episode_status(trajectory_id, ep_status)
+        # Heartbeat 1: covers stuck setup_fn (env reset, container boot).
+        ep_status = self._open_status(trajectory_id)
 
         trajectory: Trajectory | None = None
         try:
