@@ -68,6 +68,7 @@ def run_with_ray(
     step_timeout_s: float = 1800.0,
     cancel_grace_s: float = 120.0,
     orphan_threshold_s: float = 3600.0,
+    max_retry_rounds: int = 3,
     otlp_endpoint: str | None = None,
     model: str | None = None,
     agent_name: str | None = None,
@@ -90,6 +91,7 @@ def run_with_ray(
                 step_timeout_s=step_timeout_s,
                 cancel_grace_s=cancel_grace_s,
                 orphan_threshold_s=orphan_threshold_s,
+                max_retry_rounds=max_retry_rounds,
             )
     finally:
         tracer.shutdown()
@@ -109,6 +111,7 @@ def _run_with_retries(
     step_timeout_s: float,
     cancel_grace_s: float,
     orphan_threshold_s: float,
+    max_retry_rounds: int,
 ) -> ExpResult:
     """Run the experiment, then keep re-running retriable failures until none remain.
 
@@ -137,6 +140,12 @@ def _run_with_retries(
                 aggregated.failures.pop(k, None)
 
             if not _has_retriable_episodes(exp):
+                break
+
+            if round_num >= max_retry_rounds:
+                logger.info(
+                    f"Stopping auto-retry after {round_num} round(s): reached max_retry_rounds={max_retry_rounds}"
+                )
                 break
 
             round_num += 1
@@ -331,6 +340,7 @@ def run_sequentially(
     step_timeout_s: float = 1800.0,
     cancel_grace_s: float = 120.0,
     orphan_threshold_s: float = 3600.0,
+    max_retry_rounds: int = 3,
     otlp_endpoint: str | None = None,
     model: str | None = None,
     agent_name: str | None = None,
@@ -352,6 +362,7 @@ def run_sequentially(
                 step_timeout_s=step_timeout_s,
                 cancel_grace_s=cancel_grace_s,
                 orphan_threshold_s=orphan_threshold_s,
+                max_retry_rounds=max_retry_rounds,
             )
     finally:
         tracer.shutdown()
@@ -364,6 +375,7 @@ def _run_sequentially_with_retries(
     step_timeout_s: float,
     cancel_grace_s: float,
     orphan_threshold_s: float,
+    max_retry_rounds: int,
 ) -> ExpResult:
     """Run sequential rounds back-to-back until no retriable failures remain.
 
@@ -389,6 +401,12 @@ def _run_sequentially_with_retries(
                 aggregated.failures.pop(k, None)
 
             if not _has_retriable_episodes(exp):
+                break
+
+            if round_num >= max_retry_rounds:
+                logger.info(
+                    f"Stopping auto-retry after {round_num} round(s): reached max_retry_rounds={max_retry_rounds}"
+                )
                 break
 
             round_num += 1

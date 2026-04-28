@@ -61,7 +61,7 @@ directory. No trajectory deserialization in the retry decision path.
 Controls how many times a failed episode is retried. Episodes at `retry_count >= max_retries`
 are reported as permanently failed and excluded from future runs.
 
-### ADDED — `max_retry_rounds: int = 1` parameter on `run_with_ray` and `run_sequentially`
+### ADDED — `max_retry_rounds: int = 3` parameter on `run_with_ray` and `run_sequentially`
 
 After the main run completes, the runner checks for retriable episodes. If any exist
 and `retry_rounds < max_retry_rounds`, it runs again with `retry_failed=True` on the
