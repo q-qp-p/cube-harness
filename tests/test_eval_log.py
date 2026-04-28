@@ -378,6 +378,32 @@ def test_task_eval_record_n_steps(mock_agent_config) -> None:
     assert record.n_agent_steps == 3
 
 
+def test_task_eval_record_declaration_defaults_empty(mock_agent_config) -> None:
+    traj = _trajectory(reward=1.0)
+    agent_info = AgentInfo.from_agent_config(mock_agent_config)
+    task_info = TaskInfo.from_trajectory_and_metadata(traj)
+    record = TaskEvalRecord.from_trajectory(traj, agent_info, task_info)
+    assert record.declaration == {}
+
+
+def test_task_eval_record_declaration_roundtrip(mock_agent_config) -> None:
+    traj = _trajectory(reward=1.0)
+    agent_info = AgentInfo.from_agent_config(mock_agent_config)
+    task_info = TaskInfo.from_trajectory_and_metadata(traj)
+    record = TaskEvalRecord.from_trajectory(traj, agent_info, task_info)
+    record = record.model_copy(
+        update={
+            "declaration": {
+                "motivation": "capability_probe",
+                "task_selection_method": "random",
+                "compute_budget": "full_benchmark",
+            }
+        }
+    )
+    assert record.declaration["motivation"] == "capability_probe"
+    assert record.declaration["task_selection_method"] == "random"
+
+
 # ---------------------------------------------------------------------------
 # EvalLog JSONL round-trip
 # ---------------------------------------------------------------------------

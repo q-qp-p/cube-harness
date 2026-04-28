@@ -352,16 +352,6 @@ class TaskInfo(TypedBaseModel):
         description="Additional task metadata from TaskMetadata.extra_info (difficulty, domain, etc.).",
     )
 
-    # Privileged — not shown to the agent during evaluation.
-    eval_function_ref: str | None = Field(
-        default=None,
-        description=(
-            "Qualified reference to the evaluation function. "
-            "Privileged: the agent never sees this; the EvalLog does. "
-            "Format: 'module.TaskConfigClass.make() → Task.evaluate'."
-        ),
-    )
-
     @classmethod
     def from_trajectory_and_metadata(
         cls,
@@ -407,15 +397,11 @@ class TaskInfo(TypedBaseModel):
 
         task_version_hash: str | None = None
         seed: int | None = None
-        eval_function_ref: str | None = None
         if task_config is not None:
             task_version_hash = hashlib.sha256(
                 task_config.model_dump_json(serialize_as_any=True).encode()
             ).hexdigest()
             seed = task_config.seed
-            tc_module = type(task_config).__module__
-            tc_name = type(task_config).__name__
-            eval_function_ref = f"{tc_module}.{tc_name}.make() → Task.evaluate"
 
         return cls(
             benchmark_id=bm_id,
@@ -432,7 +418,6 @@ class TaskInfo(TypedBaseModel):
             first_observation_text=_extract_first_observation_text(trajectory),
             recommended_max_steps=recommended_max_steps,
             extra_info=extra_info,
-            eval_function_ref=eval_function_ref,
         )
 
 
@@ -484,6 +469,18 @@ class TaskEvalRecord(TypedBaseModel):
     trajectory_id: str = Field(description="Trajectory ID as stored on disk.")
     timestamp: float = Field(description="Episode start time as Unix timestamp.")
     framework_version: str = Field(description="cube-harness version.")
+
+    # MNAR bias correction — required for ATLAS community submissions.
+    # motivation: why this run was submitted ("capability_probe"|"leaderboard"|"training_data"|"debugging")
+    # task_selection_method: how tasks were chosen ("random"|"difficulty_stratified"|"domain_filtered"|"cherry_picked")
+    # compute_budget: how much was run ("full_benchmark"|"partial"|"targeted")
+    declaration: dict = Field(
+        default_factory=dict,
+        description=(
+            "Self-reported selection intent for MNAR bias correction. "
+            "Required for ATLAS community submissions; omit for local use."
+        ),
+    )
 
     @classmethod
     def from_trajectory(
