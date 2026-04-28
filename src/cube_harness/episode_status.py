@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Literal
 
@@ -51,7 +51,15 @@ class EpisodeStatus:
 
     @classmethod
     def from_json(cls, raw: str) -> "EpisodeStatus":
-        return cls(**json.loads(raw))
+        """Parse a status.json blob, ignoring unknown keys for forward compat.
+
+        A status file written by a future version may carry fields this version
+        doesn't know about. Dropping them silently lets older readers continue
+        functioning instead of treating the file as corrupt.
+        """
+        data = json.loads(raw)
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
     @classmethod
     def read(cls, path: Path) -> "EpisodeStatus | None":

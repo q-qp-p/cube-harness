@@ -304,6 +304,15 @@ def _kill_stale_workers(
             ray.cancel(ref, force=True)
         except Exception:
             logger.exception(f"ray.cancel failed for {traj_id}")
+
+        # Re-read just before overwriting: between the staleness check above and
+        # this point, the worker may have written a terminal status (legitimate
+        # COMPLETED/FAILED). Don't clobber it — only stamp CANCELLED if we still
+        # see RUNNING.
+        fresh = storage.read_episode_status(traj_id)
+        if fresh is not None and fresh.status != "RUNNING":
+            to_remove.append(ref)
+            continue
         status.status = "CANCELLED"
         status.ended_at = now
         status.error_type = "StepTimeout"

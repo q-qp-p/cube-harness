@@ -1428,3 +1428,33 @@ class TestEpisodeStatusIO:
         ep_dir.mkdir(parents=True, exist_ok=True)
         (ep_dir / STATUS_FILENAME).write_text("not valid json")
         assert storage.read_episode_status("t1_ep0") is None
+
+    def test_unknown_fields_ignored_for_forward_compat(self, tmp_dir) -> None:
+        """A status.json from a future version with extra fields still loads cleanly."""
+        from cube_harness.episode_status import STATUS_FILENAME
+
+        storage = FileStorage(tmp_dir)
+        ep_dir = storage._episode_dir("t1_ep0")
+        ep_dir.mkdir(parents=True, exist_ok=True)
+        raw = {
+            "status": "COMPLETED",
+            "task_id": "t1",
+            "episode_id": 0,
+            "started_at": 1.0,
+            "ended_at": 2.0,
+            "last_heartbeat_at": 2.0,
+            "current_step": 0,
+            "reward": 1.0,
+            "had_step_errors": False,
+            "error_type": None,
+            "error_message": None,
+            "retry_count": 0,
+            "extra": {},
+            "future_v2_field": "should be ignored",
+            "another_future_field": 42,
+        }
+        (ep_dir / STATUS_FILENAME).write_text(json.dumps(raw))
+        loaded = storage.read_episode_status("t1_ep0")
+        assert loaded is not None
+        assert loaded.status == "COMPLETED"
+        assert loaded.reward == 1.0

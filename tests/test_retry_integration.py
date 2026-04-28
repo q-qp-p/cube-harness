@@ -32,15 +32,16 @@ from cube.task import TaskMetadata
 
 from cube_harness.agent import Agent, AgentConfig
 from cube_harness.core import AgentOutput
-from cube_harness.episode_status import STATUS_FILENAME
-from cube_harness.exp_runner import run_with_ray
+from cube_harness.episode_status import STATUS_FILENAME, EpisodeStatus
+from cube_harness.exp_runner import run_sequentially, run_with_ray
 from cube_harness.experiment import Experiment
 from cube_harness.storage import ARCHIVED_MARKER, EPISODES_DIR, FileStorage
 from tests.conftest import MockToolConfig
 
-pytestmark = pytest.mark.slow
+# Per-test slow markers below — Ray tests are slow (~30s), sequential tests are fast (~1s).
 
 
+# Scenarios for the main 4-scenario Ray integration test.
 SCENARIOS = {
     "task_succeed": ["succeed"],
     "task_flaky": ["fail", "fail", "succeed"],
@@ -73,20 +74,25 @@ class DebugCubeTaskConfig(CubeTaskConfig):
         )
 
 
-class DebugBenchmark(CubeBenchmark):
-    benchmark_metadata = BenchmarkMetadata(
-        name="debug-retry",
-        version="0.1.0",
-        description="Scripted scenarios for retry-mechanism integration test",
-    )
-    task_metadata = {tid: TaskMetadata(id=tid) for tid in SCENARIOS}
-    task_config_class = DebugCubeTaskConfig
+def make_debug_benchmark(scenarios: dict[str, list[str]]) -> CubeBenchmark:
+    """Build a CubeBenchmark whose tasks match the keys of `scenarios`."""
 
-    def _setup(self) -> None:
-        pass
+    class _DebugBenchmark(CubeBenchmark):
+        benchmark_metadata = BenchmarkMetadata(
+            name="debug-retry",
+            version="0.1.0",
+            description="Scripted scenarios for retry-mechanism integration test",
+        )
+        task_metadata = {tid: TaskMetadata(id=tid) for tid in scenarios}
+        task_config_class = DebugCubeTaskConfig
 
-    def close(self) -> None:
-        pass
+        def _setup(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    return _DebugBenchmark()
 
 
 # --- Debug agent ---
@@ -117,10 +123,11 @@ def _next_attempt(counter_dir: str, task_id: str) -> int:
 class DebugAgentConfig(AgentConfig):
     """Agent config carrying scenarios + counter dir.
 
-    Both fields are picklable plain data, so Ray can ship the config to workers.
+    All fields are picklable plain data, so Ray can ship the config to workers.
     """
 
     counter_dir: str
+    scenarios: dict[str, list[str]]
     hang_seconds: float = 60.0
     name: str = "debug_agent"
 
@@ -142,7 +149,7 @@ class DebugAgent(Agent):
         # Initial observation embeds task_id; pull it out.
         text = obs.contents[0].data if obs.contents else ""
         task_id = text.replace("task_id=", "").strip()
-        scenarios = SCENARIOS[task_id]
+        scenarios = self.config.scenarios[task_id]
         attempt = _next_attempt(self.config.counter_dir, task_id)
         # Saturate at the last scenario if attempts exceed the script length.
         behavior = scenarios[min(attempt, len(scenarios) - 1)]
@@ -167,11 +174,12 @@ def _ray_shutdown_between_tests():
         ray.shutdown()
 
 
+@pytest.mark.slow
 def test_retry_machinery_end_to_end(tmp_dir: Path) -> None:
     """4-task Ray run exercises the full retry mechanism."""
     counter_dir = str(tmp_dir / "_attempt_counters")
-    agent_config = DebugAgentConfig(counter_dir=counter_dir, hang_seconds=10.0)
-    benchmark = DebugBenchmark()
+    agent_config = DebugAgentConfig(counter_dir=counter_dir, scenarios=SCENARIOS, hang_seconds=10.0)
+    benchmark = make_debug_benchmark(SCENARIOS)
 
     exp = Experiment(
         name="retry_integration",
@@ -229,9 +237,197 @@ def test_retry_machinery_end_to_end(tmp_dir: Path) -> None:
     assert archived_status["status"] == "CANCELLED", archived_status
     assert archived_status["error_type"] == "StepTimeout"
 
+    # Per-attempt forensics: walking task_dead's archives gives retry_counts 0..2 with FAILED + populated error_type.
+    dead_archives = _read_all_archived_statuses(tmp_dir, "task_dead_ep2")
+    assert len(dead_archives) == 3
+    dead_retry_counts = sorted(a["retry_count"] for a in dead_archives)
+    assert dead_retry_counts == [0, 1, 2]
+    for archived in dead_archives:
+        assert archived["status"] == "FAILED"
+        assert archived["error_type"] == "RuntimeError"
+        assert "scripted failure" in (archived["error_message"] or "")
+
     # Aggregated result: 3 successful trajectories, 1 failure (task_dead).
     assert "task_dead_ep2" in result.failures
     assert {"task_succeed_ep0", "task_flaky_ep1", "task_hang_ep3"}.issubset(result.trajectories.keys())
+
+
+@pytest.mark.slow
+def test_mixed_state_recovery_via_ray(tmp_dir: Path) -> None:
+    """Restart with mixed pre-existing state: COMPLETED preserved, STALE swept+retried, missing retried.
+
+    Simulates "the prior driver crashed mid-experiment" by hand-writing a heterogeneous
+    `output_dir` and verifies the new driver makes the right decision per episode:
+
+    - `task_already_done`: COMPLETED status → never re-run.
+    - `task_was_stuck`: stale RUNNING → swept to STALE → retried → COMPLETED.
+    - `task_never_started`: no status.json → retried (resume + retry_failed) → COMPLETED.
+    """
+    scenarios = {
+        "task_already_done": ["succeed"],  # won't actually be re-run
+        "task_was_stuck": ["succeed"],
+        "task_never_started": ["succeed"],
+    }
+    benchmark = make_debug_benchmark(scenarios)
+    agent_config = DebugAgentConfig(
+        counter_dir=str(tmp_dir / "_counters"),
+        scenarios=scenarios,
+        hang_seconds=10.0,
+    )
+    exp = Experiment(
+        name="mixed_state",
+        output_dir=tmp_dir,
+        agent_config=agent_config,
+        benchmark=benchmark,
+        max_retries=3,
+    )
+
+    # Materialise episode_config.json for all three (without running anything).
+    episodes = {ep.config.task_config.task_id: ep for ep in exp.get_episodes_to_run()}
+    storage = FileStorage(tmp_dir)
+
+    # Hand-craft pre-existing state to mimic a crashed prior driver:
+    done_traj_id = f"task_already_done_ep{episodes['task_already_done'].config.id}"
+    storage.write_episode_status(
+        done_traj_id,
+        EpisodeStatus(
+            status="COMPLETED",
+            task_id="task_already_done",
+            episode_id=episodes["task_already_done"].config.id,
+            started_at=time.time() - 100,
+            ended_at=time.time() - 90,
+            last_heartbeat_at=time.time() - 90,
+            reward=1.0,
+            retry_count=0,
+        ),
+    )
+
+    stuck_traj_id = f"task_was_stuck_ep{episodes['task_was_stuck'].config.id}"
+    storage.write_episode_status(
+        stuck_traj_id,
+        EpisodeStatus(
+            status="RUNNING",
+            task_id="task_was_stuck",
+            episode_id=episodes["task_was_stuck"].config.id,
+            started_at=time.time() - 7200,
+            last_heartbeat_at=time.time() - 7200,  # stale (>>step_timeout+grace)
+            current_step=4,
+            retry_count=0,
+        ),
+    )
+
+    missing_traj_id = f"task_never_started_ep{episodes['task_never_started'].config.id}"
+    # No status.json written for this one — exists as an episode_config only.
+
+    # New driver: resume picks up missing-status; retry_failed picks up STALE.
+    exp.resume = True
+    exp.retry_failed = True
+    result = run_with_ray(
+        exp,
+        n_cpus=2,
+        ray_poll_timeout=0.5,
+        step_timeout_s=10.0,
+        cancel_grace_s=1.0,
+        orphan_threshold_s=10.0,
+        max_retry_rounds=0,
+    )
+
+    # task_already_done: untouched.
+    done = storage.read_episode_status(done_traj_id)
+    assert done is not None
+    assert done.status == "COMPLETED"
+    assert done.retry_count == 0
+    assert _archive_count(tmp_dir, done_traj_id) == 0
+    assert done_traj_id not in result.trajectories  # not re-run this round
+
+    # task_was_stuck: STALE-swept, then retried to COMPLETED. Prior STALE preserved in archive.
+    stuck = storage.read_episode_status(stuck_traj_id)
+    assert stuck is not None
+    assert stuck.status == "COMPLETED", stuck
+    assert stuck.retry_count == 1
+    stuck_archives = _read_all_archived_statuses(tmp_dir, stuck_traj_id)
+    assert len(stuck_archives) == 1
+    assert stuck_archives[0]["status"] == "STALE"
+    assert stuck_archives[0]["retry_count"] == 0
+    assert stuck_traj_id in result.trajectories
+
+    # task_never_started: ran fresh, no archive (no prior attempt).
+    missing = storage.read_episode_status(missing_traj_id)
+    assert missing is not None
+    assert missing.status == "COMPLETED"
+    assert missing.retry_count == 0
+    assert _archive_count(tmp_dir, missing_traj_id) == 0
+    assert missing_traj_id in result.trajectories
+
+
+def test_run_sequentially_auto_retries_flaky_episode(tmp_dir: Path) -> None:
+    """run_sequentially auto-retries; exercises the worker-side archive (no pre-claim path)."""
+    scenarios = {"task_seq_flaky": ["fail", "succeed"]}
+    benchmark = make_debug_benchmark(scenarios)
+    agent_config = DebugAgentConfig(
+        counter_dir=str(tmp_dir / "_counters"),
+        scenarios=scenarios,
+        hang_seconds=0.0,
+    )
+    exp = Experiment(
+        name="seq_flaky",
+        output_dir=tmp_dir,
+        agent_config=agent_config,
+        benchmark=benchmark,
+        max_retries=3,
+    )
+
+    result = run_sequentially(exp, max_retry_rounds=2)
+
+    storage = FileStorage(tmp_dir)
+    statuses = storage.list_episode_statuses()
+    assert len(statuses) == 1
+    traj_id, final = next(iter(statuses.items()))
+    assert final.status == "COMPLETED"
+    assert final.retry_count == 1
+
+    # The failed attempt is preserved in an archive (worker-side path, no pre-claim).
+    archived = _read_all_archived_statuses(tmp_dir, traj_id)
+    assert len(archived) == 1
+    assert archived[0]["status"] == "FAILED"
+    assert archived[0]["retry_count"] == 0
+    assert archived[0]["error_type"] == "RuntimeError"
+
+    assert traj_id in result.trajectories
+
+
+def test_max_retry_rounds_zero_disables_auto_retry(tmp_dir: Path) -> None:
+    """max_retry_rounds=0 → a failing episode stays FAILED with no retry attempts.
+
+    Scenarios script "fail" forever; with max_retry_rounds=0 we expect exactly one
+    attempt (retry_count=0, no archives), confirming the auto-retry loop short-circuits
+    even though `max_retries=3` would otherwise allow retries.
+    """
+    scenarios = {"task_no_retry": ["fail"]}
+    benchmark = make_debug_benchmark(scenarios)
+    agent_config = DebugAgentConfig(
+        counter_dir=str(tmp_dir / "_counters"),
+        scenarios=scenarios,
+        hang_seconds=0.0,
+    )
+    exp = Experiment(
+        name="no_retry",
+        output_dir=tmp_dir,
+        agent_config=agent_config,
+        benchmark=benchmark,
+        max_retries=3,
+    )
+
+    result = run_sequentially(exp, max_retry_rounds=0)
+
+    storage = FileStorage(tmp_dir)
+    statuses = storage.list_episode_statuses()
+    assert len(statuses) == 1
+    traj_id, final = next(iter(statuses.items()))
+    assert final.status == "FAILED"
+    assert final.retry_count == 0
+    assert _archive_count(tmp_dir, traj_id) == 0  # only one attempt was ever made
+    assert traj_id in result.failures
 
 
 def _archive_count(output_dir: Path, traj_id: str) -> int:
@@ -250,3 +446,17 @@ def _read_archived_status(output_dir: Path, traj_id: str) -> dict | None:
             if status_path.exists():
                 return json.loads(status_path.read_text())
     return None
+
+
+def _read_all_archived_statuses(output_dir: Path, traj_id: str) -> list[dict]:
+    """Return every archived `status.json` dict for `traj_id`, ordered by archive timestamp."""
+    import json
+
+    base = output_dir / EPISODES_DIR
+    archived = []
+    for p in sorted(base.iterdir()):
+        if p.name.startswith(f"{traj_id}{ARCHIVED_MARKER}"):
+            status_path = p / STATUS_FILENAME
+            if status_path.exists():
+                archived.append(json.loads(status_path.read_text()))
+    return archived
