@@ -1,0 +1,127 @@
+"""Smoke tests for browsercomp_cube."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from browsercomp_cube import BrowseCompBenchmark
+from browsercomp_cube.crypto import decrypt, derive_key, encrypt
+from browsercomp_cube.debug import DebugBrowseCompBenchmark, get_debug_benchmark
+from browsercomp_cube.task import BrowseCompTask, BrowseCompTaskMetadata
+
+
+def test_browsecomp_benchmark_constructs() -> None:
+    bench = BrowseCompBenchmark()
+    assert bench.name == "browsercomp-cube"
+    assert bench.benchmark_metadata.num_tasks == 1266
+    assert len(bench.task_metadata) == 1266
+    first_id = next(iter(bench.task_metadata))
+    assert first_id.startswith("browsecomp-")
+
+
+def test_debug_benchmark_constructs() -> None:
+    bench = get_debug_benchmark()
+    assert isinstance(bench, DebugBrowseCompBenchmark)
+    assert len(bench.task_metadata) == 2
+    configs = list(bench.get_task_configs())
+    assert {c.task_id for c in configs} == {"browsecomp-debug-0000", "browsecomp-debug-0001"}
+
+
+class _FakeMessage:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content: str) -> None:
+        self.message = _FakeMessage(content)
+
+
+class _FakeCompletion:
+    def __init__(self, content: str) -> None:
+        self.choices = [_FakeChoice(content)]
+
+
+def _make_task() -> BrowseCompTask:
+    """Build a minimal BrowseCompTask without going through Benchmark.install()."""
+    from cube.tool import ToolboxConfig
+
+    from browsercomp_cube.tool import SubmitAnswerToolConfig
+
+    return BrowseCompTask(
+        metadata=BrowseCompTaskMetadata(id="browsecomp-test"),
+        tool_config=ToolboxConfig(tool_configs=[SubmitAnswerToolConfig()]),
+        problem="ignored",
+        answer="ignored",
+    )
+
+
+@pytest.fixture
+def task() -> BrowseCompTask:
+    return _make_task()
+
+
+@pytest.mark.parametrize(
+    ("grader_response", "expected"),
+    [
+        ("reasoning: looks fine\ncorrect: yes\nconfidence: 95", True),
+        ("reasoning: mismatch\ncorrect: no\nconfidence: 10", False),
+        ("CORRECT: YES", True),
+        ("Correct:   No", False),
+        ("correct:yes", True),
+    ],
+)
+def test_grader_regex_parses_yes_no(
+    task: BrowseCompTask,
+    monkeypatch: pytest.MonkeyPatch,
+    grader_response: str,
+    expected: bool,
+) -> None:
+    def fake_completion(**_: Any) -> _FakeCompletion:
+        return _FakeCompletion(grader_response)
+
+    monkeypatch.setattr("browsercomp_cube.task.litellm.completion", fake_completion)
+    assert task._call_grader("any prompt", "any-model") is expected
+
+
+def test_grader_regex_raises_when_no_match(
+    task: BrowseCompTask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_completion(**_: Any) -> _FakeCompletion:
+        return _FakeCompletion("reasoning: ok\nconfidence: 99\n(no verdict line)")
+
+    monkeypatch.setattr("browsercomp_cube.task.litellm.completion", fake_completion)
+    with pytest.raises(ValueError, match="missing 'correct: yes/no'"):
+        task._call_grader("any prompt", "any-model")
+
+
+@pytest.mark.parametrize(
+    ("plaintext", "password"),
+    [
+        ("hello world", "canary-123"),
+        ("", "any-password"),
+        ("Unicode: café — 日本語 🌍", "secret"),
+        ("a" * 257, "k"),  # spans multiple SHA-256 blocks
+    ],
+)
+def test_crypto_round_trip(plaintext: str, password: str) -> None:
+    assert decrypt(encrypt(plaintext, password), password) == plaintext
+
+
+def test_derive_key_length_and_determinism() -> None:
+    k1 = derive_key("pw", 100)
+    k2 = derive_key("pw", 100)
+    assert len(k1) == 100
+    assert k1 == k2
+    assert derive_key("pw", 0) == b""
+    assert derive_key("pw", 32) == derive_key("pw", 100)[:32]
+
+
+def test_decrypt_with_wrong_password_does_not_match() -> None:
+    ciphertext = encrypt("the secret", "right")
+    with pytest.raises(UnicodeDecodeError):
+        # Random XOR result is overwhelmingly invalid UTF-8 for this input.
+        decrypt(ciphertext, "wrong-password-different-length")
