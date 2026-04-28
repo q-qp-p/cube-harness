@@ -72,14 +72,14 @@ class BrowseCompTask(Task):
     validate_per_step: bool = False
     accept_agent_stop: bool = True
     grader_retries: int = 3
-    scorer_model: str = "gpt-5.4-mini"
+    scorer_model: str
 
     def reset(self) -> tuple[Observation, dict[str, Any]]:
         self.tool.reset()
         prompt = self.problem + _FORMAT_INSTRUCTIONS
         return Observation.from_text(prompt), {"problem": self.problem}
 
-    def _call_grader(self, prompt: str, scorer_model: str) -> bool:
+    def _call_grader(self, prompt: str, scorer_model: str) -> tuple[bool, str]:
         completion = litellm.completion(
             model=scorer_model,
             messages=[{"role": "user", "content": prompt}],
@@ -88,7 +88,7 @@ class BrowseCompTask(Task):
         match = re.search(r"correct:\s*(yes|no)", response, re.IGNORECASE)
         if not match:
             raise ValueError(f"Grader response missing 'correct: yes/no':\n{response}")
-        return match.group(1).lower() == "yes"
+        return match.group(1).lower() == "yes", response
 
     def _submit_tool(self) -> SubmitAnswerTool:
         assert isinstance(self.tool, Toolbox)
@@ -110,8 +110,12 @@ class BrowseCompTask(Task):
         last_error: Exception | None = None
         for _ in range(self.grader_retries):
             try:
-                is_correct = self._call_grader(prompt, self.scorer_model)
-                return (1.0 if is_correct else 0.0), {"correct": is_correct, "submitted": submitted}
+                is_correct, grader_response = self._call_grader(prompt, self.scorer_model)
+                return (1.0 if is_correct else 0.0), {
+                    "correct": is_correct,
+                    "submitted": submitted,
+                    "grader_response": grader_response,
+                }
             except Exception as e:
                 last_error = e
 
@@ -129,7 +133,7 @@ class BrowseCompTaskConfig(TaskConfig):
     payload never crosses process boundaries inside the config object.
     """
 
-    scorer_model: str = "gpt-5.4-mini"
+    scorer_model: str
 
     def make(
         self,

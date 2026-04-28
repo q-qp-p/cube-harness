@@ -13,12 +13,13 @@ from browsercomp_cube.task import BrowseCompTask, BrowseCompTaskMetadata
 
 
 def test_browsecomp_benchmark_constructs() -> None:
-    bench = BrowseCompBenchmark()
+    bench = BrowseCompBenchmark(scorer_model="gpt-5.4-mini")
     assert bench.name == "browsercomp-cube"
     assert bench.benchmark_metadata.num_tasks == 1266
     assert len(bench.task_metadata) == 1266
     first_id = next(iter(bench.task_metadata))
     assert first_id.startswith("browsecomp-")
+    assert bench.scorer_model == "gpt-5.4-mini"
 
 
 def test_debug_benchmark_constructs() -> None:
@@ -55,6 +56,7 @@ def _make_task() -> BrowseCompTask:
         tool_config=ToolboxConfig(tool_configs=[SubmitAnswerToolConfig()]),
         problem="ignored",
         answer="ignored",
+        scorer_model="any-model",
     )
 
 
@@ -83,7 +85,9 @@ def test_grader_regex_parses_yes_no(
         return _FakeCompletion(grader_response)
 
     monkeypatch.setattr("browsercomp_cube.task.litellm.completion", fake_completion)
-    assert task._call_grader("any prompt", "any-model") is expected
+    is_correct, raw = task._call_grader("any prompt", "any-model")
+    assert is_correct is expected
+    assert raw == grader_response
 
 
 def test_grader_regex_raises_when_no_match(

@@ -29,13 +29,13 @@ class BrowseCompBenchmark(Benchmark):
         version="0.1.0",
         description="BrowseComp benchmark — hard web information retrieval requiring multi-step browsing",
         num_tasks=1266,
-        tags=["web-search", "information-retrieval"],
+        tags=["web", "browser", "reasoning", "nlp"],
     )
     # Auto-loaded from task_metadata.json by Benchmark.__init_subclass__.
     task_metadata: ClassVar[dict[str, BrowseCompTaskMetadata]]
     task_config_class: ClassVar[type[TaskConfig]] = BrowseCompTaskConfig
 
-    scorer_model: str = "gpt-5.4-mini"
+    scorer_model: str
 
     @classmethod
     def install(cls) -> None:

@@ -3,6 +3,18 @@ name = "browsercomp-cube"
 version = "0.1.0"
 description = "BrowseComp benchmark — web browsing information retrieval"
 requires-python = ">=3.12"
+authors = [
+    { name = "Jason Wei" },
+    { name = "Zhiqing Sun" },
+    { name = "Spencer Papay" },
+    { name = "Scott McKinney" },
+    { name = "Jeffrey Han" },
+    { name = "Isa Fulford" },
+    { name = "Hyung Won Chung" },
+    { name = "Alex Tachard Passos" },
+    { name = "William Fedus" },
+    { name = "Mia Glaese" },
+]
 dependencies = [
     "cube-standard",
     "cube-web-tool",

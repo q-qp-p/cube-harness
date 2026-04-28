@@ -63,9 +63,10 @@ _TASK_ACTIONS: dict[str, list[Action]] = {
 class DebugBrowseCompTask(BrowseCompTask):
     """BrowseCompTask with a deterministic grader — no LLM calls."""
 
-    def _call_grader(self, prompt: str, scorer_model: str) -> bool:
+    def _call_grader(self, prompt: str, scorer_model: str) -> tuple[bool, str]:
         submitted = self._submit_tool().last_answer or ""
-        return self.answer.lower() in submitted.lower()
+        is_correct = self.answer.lower() in submitted.lower()
+        return is_correct, f"correct: {'yes' if is_correct else 'no'} (debug grader)"
 
 
 class DebugBrowseCompTaskConfig(BrowseCompTaskConfig):
@@ -97,6 +98,8 @@ class DebugBrowseCompBenchmark(BrowseCompBenchmark):
     benchmark_metadata: ClassVar[BenchmarkMetadata] = BrowseCompBenchmark.benchmark_metadata
     task_metadata: ClassVar[dict[str, BrowseCompTaskMetadata]] = _debug_task_metadata()
     task_config_class: ClassVar[type[TaskConfig]] = DebugBrowseCompTaskConfig
+
+    scorer_model: str = "debug-grader-unused"
 
     @classmethod
     def install(cls) -> None:
