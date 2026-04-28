@@ -20,11 +20,13 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_model(exp: Experiment) -> str | None:
+    """Return the LLM model name from the agent config, if any (for tracing/labeling)."""
     llm_config = getattr(exp.agent_config, "llm_config", None)
     return llm_config.model_name if llm_config else None
 
 
 def _trajectory_id(episode: Episode) -> str:
+    """Build the canonical trajectory id `{task_id}_ep{episode_id}` for an Episode."""
     return trajectory_log_id(episode.config.task_config.task_id, episode.config.id)
 
 
@@ -67,6 +69,7 @@ def run_with_ray(
     model: str | None = None,
     agent_name: str | None = None,
 ) -> ExpResult:
+    """Run `exp` in parallel on Ray, with auto-retry rounds and step-timeout enforcement."""
     model = model or _extract_model(exp)
     tracer = get_tracer(
         exp.name,
@@ -154,12 +157,14 @@ def _run_with_ray_impl(
     cancel_grace_s: float,
     orphan_threshold_s: float,
 ) -> ExpResult:
+    """Run a single Ray round: pre-claim, submit, poll with step-timeout, sweep stale on shutdown."""
     exp.save_config()
     output_dir = exp.output_dir
     storage = FileStorage(output_dir)
 
     @ray.remote
     def run_episode(episode: Episode) -> Trajectory:
+        """Ray entry point: redirect logs to the episode's log file and run the episode."""
         traj_id = _trajectory_id(episode)
         log_file = get_log_path(output_dir, traj_id)
         with redirect_output_to_log(log_file, append=True, tee=False, log_format=LOG_FORMAT):
@@ -224,6 +229,7 @@ def _poll_ray(
     step_timeout_s: float,
     cancel_grace_s: float,
 ) -> ExpResult:
+    """Wait on Ray refs, collecting trajectories/failures and force-killing workers with stale heartbeats."""
     results = ExpResult(tasks_num=len(ref_to_traj_id), config=exp.config, exp_id=f"{exp.name}_{uuid4().hex}")
     completed = 0
     episodes_in_progress = list(ref_to_traj_id.keys())
@@ -321,6 +327,7 @@ def run_sequentially(
     model: str | None = None,
     agent_name: str | None = None,
 ) -> ExpResult:
+    """Run `exp` in-process (no Ray) with auto-retry rounds — the debug-friendly path."""
     model = model or _extract_model(exp)
     tracer = get_tracer(
         exp.name,
@@ -352,6 +359,7 @@ def _run_sequentially_with_retries(
     cancel_grace_s: float,
     orphan_threshold_s: float,
 ) -> ExpResult:
+    """Run sequential rounds back-to-back, replaying retriable failures up to `max_retry_rounds`."""
     aggregated = ExpResult(tasks_num=0, config=exp.config, exp_id=f"{exp.name}_{uuid4().hex}")
     original_resume = exp.resume
     original_retry_failed = exp.retry_failed
@@ -402,6 +410,7 @@ def _run_sequentially_impl(
     cancel_grace_s: float,
     orphan_threshold_s: float,
 ) -> ExpResult:
+    """Run a single sequential round in-process, returning trajectories and failures for this round."""
     exp.save_config()
     exp.benchmark.setup()
     try:
