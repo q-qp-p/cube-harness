@@ -11,6 +11,7 @@ from pydantic import Field
 from cube_harness.agent import AgentConfig
 from cube_harness.core import Trajectory
 from cube_harness.episode import MAX_STEPS, Episode
+from cube_harness.episode_logs import trajectory_log_id
 from cube_harness.episode_status import RETRIABLE_STATUSES, EpisodeStatus
 from cube_harness.storage import FileStorage
 
@@ -160,7 +161,7 @@ class Experiment(TypedBaseModel):
         parsed = self._parse_episode_config_filename(config_file)
         if parsed:
             episode_id, task_id = parsed
-            return f"{task_id}_ep{episode_id}"
+            return trajectory_log_id(task_id, episode_id)
         return None
 
     def _parse_episode_config_filename(self, config_file: Path) -> tuple[int, str] | None:

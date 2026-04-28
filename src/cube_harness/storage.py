@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from cube_harness.core import AgentOutput, Trajectory, TrajectoryStep
 from cube_harness.episode_logs import get_log_path as get_episode_log_path
+from cube_harness.episode_logs import trajectory_log_id
 from cube_harness.episode_status import STATUS_FILENAME, EpisodeStatus
 
 if TYPE_CHECKING:
@@ -492,7 +493,7 @@ class FileStorage:
         return stubs
 
     def save_episode_config(self, episode_config: "EpisodeConfig") -> None:
-        traj_id = f"{episode_config.task_config.task_id}_ep{episode_config.id}"
+        traj_id = trajectory_log_id(episode_config.task_config.task_id, episode_config.id)
         ep_dir = self._episode_dir(traj_id)
         ep_dir.mkdir(parents=True, exist_ok=True)
         config_path = ep_dir / "episode_config.json"

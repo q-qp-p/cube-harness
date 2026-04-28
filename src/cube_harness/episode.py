@@ -12,6 +12,7 @@ from termcolor import colored
 
 from cube_harness.agent import AgentConfig
 from cube_harness.core import AgentOutput, Trajectory, TrajectoryStep
+from cube_harness.episode_logs import trajectory_log_id
 from cube_harness.episode_status import TERMINAL_STATUSES, EpisodeStatus, next_retry_count
 from cube_harness.metrics.tracer import get_tracer
 from cube_harness.storage import EPISODES_DIR, FileStorage, Storage
@@ -133,7 +134,7 @@ class Episode:
     ) -> Trajectory:
         """Run loop for the agent on the task."""
         task_id = self.config.task_config.task_id
-        trajectory_id = f"{task_id}_ep{self.config.id}"
+        trajectory_id = trajectory_log_id(task_id, self.config.id)
         tracer = get_tracer(self.config.exp_name)
 
         # Heartbeat 1: top of _run_loop (covers stuck setup_fn — env reset, container boot).
