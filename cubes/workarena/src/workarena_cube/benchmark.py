@@ -9,7 +9,7 @@ from cube.seed import AbstractSeedGenerator
 from cube.task import TaskConfig, TaskMetadata
 from pydantic import PrivateAttr, model_validator
 
-from workarena_cube.task import WorkArenaTaskConfig, WorkArenaTaskMetadata
+from workarena_cube.task import WorkArenaTaskConfig
 
 logger = logging.getLogger(__name__)
 
