@@ -128,11 +128,6 @@ Run at:
 - The start of `get_episodes_to_run()` when `resume=True`
 - After `ray.shutdown()` in `_run_with_ray_impl`
 
-### ADDED — `is_retriable(status, max_retries) -> bool` (in `experiment.py`)
-
-Standalone helper; `True` if status is `None` or in `RETRIABLE_STATUSES` with
-`retry_count < max_retries`.
-
 ### ADDED — `max_retries: int = 3` field on `Experiment`
 
 Controls how many times a failed episode is retried. Episodes at `retry_count >= max_retries`
@@ -160,6 +155,9 @@ def write_episode_status(self, trajectory_id: str, status: EpisodeStatus) -> Non
 
 def read_episode_status(self, trajectory_id: str) -> EpisodeStatus | None: ...
     # Returns None if status.json does not exist or is corrupt
+
+def archive_episode(self, trajectory_id: str) -> None: ...
+    # Renames the episode directory to <id>.archived_<ts>/ preserving per-attempt history
 ```
 
 ### ADDED — `FileStorage` implementation
@@ -183,8 +181,9 @@ Status files live at `episodes/{trajectory_id}/status.json`.
 Before submitting episodes to Ray, the driver calls `_pre_claim(storage, episode)`:
 
 - Reads any prior `status.json`.
-- If prior is terminal, archives the episode directory (preserving per-attempt history).
+- If prior is terminal, calls `storage.archive_episode(traj_id)` (public `Storage` Protocol method) to preserve per-attempt history.
 - Writes `status=QUEUED` with `last_heartbeat_at=None` and `retry_count` from `next_retry_count(prior)`.
+- Only called for episodes that will actually run — in `debug_limit` mode, episodes beyond the limit are not pre-claimed.
 
 A concurrent runner sees `QUEUED` / `RUNNING` and skips those episodes.
 

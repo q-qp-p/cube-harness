@@ -46,6 +46,8 @@ class Storage(Protocol):
 
     def read_episode_status(self, trajectory_id: str) -> EpisodeStatus | None: ...
 
+    def archive_episode(self, trajectory_id: str) -> None: ...
+
 
 _thread_local = threading.local()
 
@@ -171,6 +173,12 @@ class FileStorage:
         archived = ep_dir.parent / f"{ep_dir.name}{ARCHIVED_MARKER}{time.time()}"
         ep_dir.rename(archived)
         logger.info(f"Archived {ep_dir.name} -> {archived.name}")
+
+    def archive_episode(self, trajectory_id: str) -> None:
+        """Archive the episode directory for a terminal attempt, preserving its history."""
+        ep_dir = self._episode_dir(trajectory_id)
+        if ep_dir.exists():
+            self._archive_episode(ep_dir)
 
     def save_step(self, step: TrajectoryStep, trajectory_id: str, step_num: int) -> None:
         ep_dir = self._episode_dir(trajectory_id)

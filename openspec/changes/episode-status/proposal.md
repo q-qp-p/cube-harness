@@ -111,10 +111,10 @@ stateDiagram-v2
 | `COMPLETED` | `[terminal]` | — | Always — legitimate success, not retriable |
 | `MAX_STEPS_REACHED` | `[terminal]` | — | Always — agent exhausted step budget, not retriable |
 
-> ¹ **Known gap:** sequential mode currently skips `_pre_claim`, so episodes waiting
-> their turn have no `status.json`. A crash mid-run makes them indistinguishable from
-> episodes that were never submitted. The fix is to pre-claim all episodes upfront in
-> `_run_sequentially_impl` before the loop starts — tracked as a follow-up.
+> ¹ Sequential mode now calls `_pre_claim` for each episode before it runs (same
+> semantics as Ray mode). Episodes that will not run in the current `debug_limit` slice
+> are not pre-claimed, so they remain invisible to the retry loop and are picked up
+> cleanly on a future `resume=True` run.
 
 ---
 
@@ -371,11 +371,12 @@ The final `ExpResult` aggregates trajectories and failures across all rounds.
 
 `run_sequentially` shares `max_retry_rounds` and the same retry loop. It does **not**
 enforce `step_timeout_s` (no driver poll loop, no external killer for the in-process
-worker). Heartbeats are still written for status visibility. Pre-claim (`_pre_claim`)
-is skipped — there's no concurrency to defend against — but `Episode._open_status`
-still archives any prior terminal directory and writes `RUNNING` before the loop
-starts. A hung step in sequential mode requires a human Ctrl-C — acceptable, since
-sequential is the debug path.
+worker). Heartbeats are still written for status visibility. `_pre_claim` is called
+for each episode immediately before it runs, writing `QUEUED` and archiving any prior
+terminal directory. Episodes beyond `debug_limit` are not pre-claimed, so they remain
+cleanly unsubmitted and are eligible for `resume=True` without waiting for
+`orphan_threshold_s`. A hung step in sequential mode requires a human Ctrl-C —
+acceptable, since sequential is the debug path.
 
 ---
 
@@ -386,7 +387,12 @@ class Storage(Protocol):
     ...
     def write_episode_status(self, trajectory_id: str, status: EpisodeStatus) -> None: ...
     def read_episode_status(self, trajectory_id: str) -> EpisodeStatus | None: ...
+    def archive_episode(self, trajectory_id: str) -> None: ...
 ```
+
+`archive_episode` renames the episode directory to `<id>.archived_<ts>/`, preserving
+per-attempt history. Callers (including `_pre_claim`) use the Protocol method rather
+than reaching into `FileStorage`'s private internals.
 
 `FileStorage` also adds `list_episode_statuses() -> dict[str, EpisodeStatus]`, used
 by the retry loop and sweep. Atomic write is via a `.tmp` sibling + `os.replace()`.
@@ -509,6 +515,8 @@ Target wall-clock: 30–60 s including Ray startup. Marked `@pytest.mark.slow`.
 | Code path | Test |
 |---|---|
 | Pre-claim writes `QUEUED` for all episodes before Ray submit | `test_retry_machinery_end_to_end` |
+| Sequential pre-claim writes `QUEUED` only for episodes that will run | `test_sequential_pre_claims_only_episodes_that_will_run` |
+| `debug_limit` orphans do not block `resume=True` | `test_debug_limit_orphans_do_not_block_resume` |
 | Worker overwrites `QUEUED` → `RUNNING` in `_open_status` | `test_retry_machinery_end_to_end` |
 | Worker writes `RUNNING` → `COMPLETED` / `FAILED` | `test_retry_machinery_end_to_end` |
 | Step-boundary heartbeat | `test_retry_machinery_end_to_end` (hang can't fire without it) |

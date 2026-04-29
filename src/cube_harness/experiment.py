@@ -236,12 +236,3 @@ def sweep_stale_statuses(
         swept.append(trajectory_id)
         logger.warning(f"Swept stale {prior_state} -> STALE for {trajectory_id}")
     return swept
-
-
-def is_retriable(status: EpisodeStatus | None, max_retries: int) -> bool:
-    """Standalone helper: True if a status (or missing status) qualifies for retry."""
-    if status is None:
-        return True
-    if status.status not in RETRIABLE_STATUSES:
-        return False
-    return status.retry_count < max_retries

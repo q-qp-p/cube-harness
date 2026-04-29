@@ -1458,3 +1458,31 @@ class TestEpisodeStatusIO:
         assert loaded is not None
         assert loaded.status == "COMPLETED"
         assert loaded.reward == 1.0
+
+    def test_archive_episode_renames_directory(self, tmp_dir: Path) -> None:
+        """archive_episode moves the episode dir to <id>.archived_<ts>/ and makes it invisible to readers."""
+        from cube_harness.episode_status import EpisodeStatus
+
+        storage = FileStorage(tmp_dir)
+        status = EpisodeStatus(status="FAILED", task_id="t1", episode_id=0, started_at=1.0)
+        storage.write_episode_status("t1_ep0", status)
+
+        episodes_dir = tmp_dir / "episodes"
+        assert (episodes_dir / "t1_ep0").exists()
+
+        storage.archive_episode("t1_ep0")
+
+        # Original directory is gone.
+        assert not (episodes_dir / "t1_ep0").exists()
+
+        # An archived copy exists.
+        archived = [d for d in episodes_dir.iterdir() if ".archived_" in d.name]
+        assert len(archived) == 1
+
+        # read_episode_status sees nothing (archived dir is excluded from _episode_dirs).
+        assert storage.read_episode_status("t1_ep0") is None
+
+    def test_archive_episode_noop_when_dir_missing(self, tmp_dir: Path) -> None:
+        """archive_episode on a non-existent trajectory_id does not raise."""
+        storage = FileStorage(tmp_dir)
+        storage.archive_episode("nonexistent_ep0")  # should not raise

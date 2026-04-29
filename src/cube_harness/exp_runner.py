@@ -12,7 +12,7 @@ from cube_harness.episode_logs import LOG_FORMAT, get_log_path, redirect_output_
 from cube_harness.episode_status import RETRIABLE_STATUSES, TERMINAL_STATUSES, EpisodeStatus, next_retry_count
 from cube_harness.experiment import Experiment, ExpResult, sweep_stale_statuses
 from cube_harness.metrics.tracer import get_trace_env_vars, get_tracer
-from cube_harness.storage import FileStorage
+from cube_harness.storage import FileStorage, Storage
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def _trajectory_id(episode: Episode) -> str:
     return trajectory_log_id(episode.config.task_config.task_id, episode.config.id)
 
 
-def _pre_claim(storage: FileStorage, episode: Episode) -> None:
+def _pre_claim(storage: Storage, episode: Episode) -> None:
     """Write `QUEUED` for an episode before submitting it to Ray.
 
     `QUEUED` distinguishes "submitted to Ray, waiting for a worker" from
@@ -42,9 +42,7 @@ def _pre_claim(storage: FileStorage, episode: Episode) -> None:
     traj_id = _trajectory_id(episode)
     prior = storage.read_episode_status(traj_id)
     if prior is not None and prior.status in TERMINAL_STATUSES:
-        ep_dir = storage._episode_dir(traj_id)
-        if ep_dir.exists():
-            storage._archive_episode(ep_dir)
+        storage.archive_episode(traj_id)
     storage.write_episode_status(
         traj_id,
         EpisodeStatus(
@@ -434,11 +432,11 @@ def _run_sequentially_impl(
             cancel_grace_s=cancel_grace_s,
             orphan_threshold_s=orphan_threshold_s,
         )
-        for episode in all_episodes:
-            _pre_claim(storage, episode)
         if debug_limit is not None:
             logger.info(f"Running only first {debug_limit} episodes for debugging")
         episodes = all_episodes[:debug_limit] if debug_limit is not None else all_episodes
+        for episode in episodes:
+            _pre_claim(storage, episode)
 
         results = ExpResult(
             tasks_num=len(episodes),

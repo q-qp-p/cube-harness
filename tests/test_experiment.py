@@ -530,11 +530,12 @@ class TestStatusBasedSelection:
         else:
             assert result == []
 
-    def test_sequential_pre_claims_all_episodes_as_queued_before_loop(self, tmp_dir, mock_agent_config):
-        """Sequential mode pre-claims all episodes as QUEUED before the loop starts.
+    def test_sequential_pre_claims_only_episodes_that_will_run(self, tmp_dir, mock_agent_config) -> None:
+        """Sequential mode pre-claims only the episodes that will actually run.
 
-        All waiting episodes must have status.json=QUEUED from the start so a crash
-        mid-run leaves them distinguishable from episodes that were never submitted.
+        With debug_limit=1, only 1 of 3 episodes should be pre-claimed. The other 2
+        must have no status.json — they were never submitted, so a resume run can pick
+        them up without waiting for orphan_threshold_s to expire.
         """
         benchmark = _make_benchmark(3)
         exp = Experiment(
@@ -547,19 +548,43 @@ class TestStatusBasedSelection:
 
         run_sequentially(exp, debug_limit=1)
 
-        # All 3 episodes must have a status.json — not just the one that ran.
+        # Only the 1 episode that ran should have a status.json.
         all_statuses = storage.list_episode_statuses()
-        assert len(all_statuses) == 3, (
-            f"Expected all 3 episodes pre-claimed, got {len(all_statuses)}: {list(all_statuses)}"
+        assert len(all_statuses) == 1, (
+            f"Expected only 1 episode pre-claimed (debug_limit=1), got {len(all_statuses)}: {list(all_statuses)}"
         )
 
-        # The episode that ran should be COMPLETED.
+        # That episode should be COMPLETED.
         completed = [tid for tid, s in all_statuses.items() if s.status == "COMPLETED"]
         assert len(completed) == 1
 
-        # The two that didn't run should be QUEUED (pre-claimed but not started).
+    def test_debug_limit_orphans_do_not_block_resume(self, tmp_dir, mock_agent_config) -> None:
+        """Episodes beyond debug_limit must not appear as QUEUED orphans that block resumption.
+
+        Before the fix, all episodes were pre-claimed as QUEUED before debug_limit slicing.
+        QUEUED is not in RETRIABLE_STATUSES, so those orphans would be silently skipped on
+        a resume=True run until orphan_threshold_s elapsed.
+        """
+        benchmark = _make_benchmark(3)
+        exp = Experiment(
+            name="test_debug_orphan",
+            output_dir=tmp_dir,
+            agent_config=mock_agent_config,
+            benchmark=benchmark,
+        )
+        storage = FileStorage(tmp_dir)
+
+        run_sequentially(exp, debug_limit=1)
+
+        # Confirm no QUEUED orphans exist for the un-run episodes.
+        all_statuses = storage.list_episode_statuses()
         queued = [tid for tid, s in all_statuses.items() if s.status == "QUEUED"]
-        assert len(queued) == 2
+        assert queued == [], f"Found orphaned QUEUED episodes that would block resume: {queued}"
+
+        # resume=True should find 2 episodes to run (the ones that weren't debug-limited).
+        exp.resume = True
+        episodes_to_resume = exp.get_episodes_to_run()
+        assert len(episodes_to_resume) == 2, f"Expected 2 episodes available for resume, got {len(episodes_to_resume)}"
 
     def test_heartbeat_advances_current_step_and_timestamp(self, tmp_dir, mock_agent_config):
         """RUNNING → RUNNING: each turn updates last_heartbeat_at and current_step without changing status."""
