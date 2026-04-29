@@ -2,6 +2,7 @@
 
 import json
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,7 +17,7 @@ from cube_harness.episode_status import EpisodeStatus
 from cube_harness.exp_runner import _kill_stale_workers, run_sequentially
 from cube_harness.experiment import Experiment, ExpResult, sweep_stale_statuses
 from cube_harness.storage import FileStorage
-from tests.conftest import MockCubeBenchmark, MockCubeTask, MockCubeTaskConfig, MockToolConfig
+from tests.conftest import MockAgentConfig, MockCubeBenchmark, MockCubeTask, MockCubeTaskConfig, MockToolConfig
 
 
 def _make_failing_benchmark() -> CubeBenchmark:
