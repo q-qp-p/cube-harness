@@ -2,6 +2,8 @@
 
 import logging
 import time
+from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import ray
@@ -58,18 +60,21 @@ def _pre_claim(storage: Storage, episode: Episode) -> None:
     )
 
 
-def _write_episode_record(exp: Experiment, trajectory: Trajectory, episode: Episode) -> None:
+def _write_episode_record(
+    output_dir: Path,
+    evaluation_id: str,
+    trajectory: Trajectory,
+    episode: Episode,
+    task_metadata: Any | None = None,
+) -> None:
     """Build and persist an EpisodeRecord immediately after an episode completes."""
-    task_id = trajectory.metadata.get("task_id", "")
-    task_metadata = getattr(exp.benchmark, "task_metadata", {}).get(task_id)
-    evaluation_id = compute_evaluation_id(exp.name, exp.output_dir)
     record = EpisodeRecord.from_trajectory(
         trajectory,
         evaluation_id=evaluation_id,
         task_metadata=task_metadata,
         task_config=episode.config.task_config,
     )
-    write_episode_record(exp.output_dir, record)
+    write_episode_record(output_dir, record)
 
 
 def run_with_ray(
@@ -188,7 +193,16 @@ def _run_with_ray_impl(
         traj_id = _trajectory_id(episode)
         log_file = get_log_path(output_dir, traj_id)
         with redirect_output_to_log(log_file, append=True, tee=False, log_format=LOG_FORMAT):
-            return episode.run()
+            trajectory = episode.run()
+            # Write the episode record on the worker, co-located with the trajectory write.
+            # task_metadata (split/abstract_description) is not available on the worker —
+            # those optional fields are left None.
+            try:
+                evaluation_id = compute_evaluation_id(episode.config.exp_name, episode.config.output_dir)
+                _write_episode_record(episode.config.output_dir, evaluation_id, trajectory, episode)
+            except Exception:
+                logger.warning(f"Failed to write episode record for {traj_id}", exc_info=True)
+            return trajectory
 
     if not ray.is_initialized():
         ray.init(
@@ -213,16 +227,13 @@ def _run_with_ray_impl(
             _pre_claim(storage, episode)
 
         ref_to_traj_id: dict[ray.ObjectRef, str] = {}
-        ref_to_episode: dict[ray.ObjectRef, Episode] = {}
         for episode in episodes:
             ref = run_episode.remote(episode)
             ref_to_traj_id[ref] = _trajectory_id(episode)
-            ref_to_episode[ref] = episode
         logger.info(f"Start {len(episodes)} episodes in parallel using Ray with {n_cpus} workers")
         results = _poll_ray(
             exp,
             ref_to_traj_id,
-            ref_to_episode,
             storage,
             ray_poll_timeout=ray_poll_timeout,
             step_timeout_s=step_timeout_s,
@@ -246,7 +257,6 @@ def _run_with_ray_impl(
 def _poll_ray(
     exp: Experiment,
     ref_to_traj_id: dict[ray.ObjectRef, str],
-    ref_to_episode: dict[ray.ObjectRef, Episode],
     storage: FileStorage,
     *,
     ray_poll_timeout: float,
@@ -278,10 +288,6 @@ def _poll_ray(
                     traj.n_env_steps,
                 )
                 results.trajectories[traj_id] = traj
-                try:
-                    _write_episode_record(exp, traj, ref_to_episode[task_ref])
-                except Exception:
-                    logger.warning(f"Failed to write episode record for {traj_id}", exc_info=True)
             except Exception as e:
                 logger.exception(f"Run failed with exception: {e}")
                 results.failures[traj_id] = str(e)
@@ -466,6 +472,8 @@ def _run_sequentially_impl(
             config=exp.config,
             exp_id=f"{exp.name}_{uuid4().hex}",
         )
+        evaluation_id = compute_evaluation_id(exp.name, exp.output_dir)
+        task_metadata_index: dict[str, Any] = getattr(exp.benchmark, "task_metadata", {})
         for episode in episodes:
             traj_id = _trajectory_id(episode)
             log_file = get_log_path(exp.output_dir, traj_id)
@@ -473,8 +481,15 @@ def _run_sequentially_impl(
                 try:
                     trajectory = episode.run()
                     results.trajectories[traj_id] = trajectory
+                    task_id = trajectory.metadata.get("task_id", "")
                     try:
-                        _write_episode_record(exp, trajectory, episode)
+                        _write_episode_record(
+                            exp.output_dir,
+                            evaluation_id,
+                            trajectory,
+                            episode,
+                            task_metadata=task_metadata_index.get(task_id),
+                        )
                     except Exception:
                         logger.warning(f"Failed to write episode record for {traj_id}", exc_info=True)
                 except Exception as e:
