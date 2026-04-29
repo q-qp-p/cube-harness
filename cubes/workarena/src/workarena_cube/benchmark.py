@@ -1,7 +1,7 @@
 """WorkArena benchmark implementation for the CUBE framework."""
 
 import logging
-from typing import ClassVar
+from typing import ClassVar, Self
 
 from browsergym.workarena import get_all_tasks_agents
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
@@ -59,7 +59,7 @@ class WorkArenaBenchmark(Benchmark):
     so there is no shared infrastructure to provision in _setup().
     """
 
-    config: "WorkArenaBenchmarkConfig"  # type: ignore
+    config: "WorkArenaBenchmarkConfig"  # type: ignore - WorkArenaBenchmarkConfig is a BenchmarkConfig
 
     def _setup(self) -> None:
         logger.info(f"WorkArena benchmark ready with {self.config.num_tasks} tasks")
@@ -115,7 +115,7 @@ class WorkArenaBenchmarkConfig(BenchmarkConfig):
     is_agent_curriculum: bool = True
 
     @model_validator(mode="after")
-    def _init_seed_generator(self) -> "WorkArenaBenchmarkConfig":
+    def _init_seed_generator(self) -> Self:
         """Initialize seed_generator at construction time from config fields."""
         if self.seed_generator is None:
             self.seed_generator = WorkArenaSeedGenerator(
