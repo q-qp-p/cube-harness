@@ -89,9 +89,8 @@ def main(debug: bool, agent: str, level: int) -> None:
         tools_configs.append(WorkArenaInfeasibleToolConfig())
     tool_config = ToolboxConfig(tool_configs=tools_configs)
 
-    # Configure WorkArena benchmark — filter to the requested level via named_subset,
-    # then materialize the runtime Benchmark via .make() (new BenchmarkConfig + Benchmark
-    # split from cube-standard 0.1.0rc7).
+    # Configure WorkArena benchmark: filter to the requested level via `.named_subset`,
+    # then start the runtime Benchmark via `.make()`
     benchmark = WorkArenaBenchmarkConfig(tool_config=tool_config, n_seeds_l1=1).named_subset(f"l{level}").make()
 
     exp = Experiment(
