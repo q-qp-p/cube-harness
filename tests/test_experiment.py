@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from cube.benchmark import Benchmark as CubeBenchmark
+from cube.benchmark import BenchmarkConfig as CubeBenchmarkConfig
 from cube.benchmark import BenchmarkMetadata
 from cube.core import EnvironmentOutput, Observation
 from cube.task import TaskMetadata
@@ -17,11 +17,18 @@ from cube_harness.episode_status import EpisodeStatus
 from cube_harness.exp_runner import _kill_stale_workers, run_sequentially
 from cube_harness.experiment import Experiment, ExpResult, sweep_stale_statuses
 from cube_harness.storage import FileStorage
-from tests.conftest import MockAgentConfig, MockCubeBenchmark, MockCubeTask, MockCubeTaskConfig, MockToolConfig
+from tests.conftest import (
+    MockAgentConfig,
+    MockCubeBenchmark,
+    MockCubeBenchmarkConfig,
+    MockCubeTask,
+    MockCubeTaskConfig,
+    MockToolConfig,
+)
 
 
-def _make_failing_benchmark() -> CubeBenchmark:
-    """Benchmark whose single task raises on the first step() call."""
+def _make_failing_benchmark() -> CubeBenchmarkConfig:
+    """BenchmarkConfig whose single task raises on the first step() call."""
 
     class _FailingTask(MockCubeTask):
         def step(self, actions):
@@ -29,23 +36,22 @@ def _make_failing_benchmark() -> CubeBenchmark:
 
     class _FailingTaskConfig(MockCubeTaskConfig):
         def make(self, runtime_context=None, container_backend=None) -> _FailingTask:
-            from cube.task import TaskMetadata
-
             return _FailingTask(
-                metadata=TaskMetadata(id=self.task_id),
+                metadata=self.metadata,
                 tool_config=self.tool_config or MockToolConfig(),
             )
 
-    class _FailingBenchmark(MockCubeBenchmark):
+    class _FailingBenchmarkConfig(MockCubeBenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(name="failing", version="0.1.0", description="test")
         task_metadata = {"fail_task_0": TaskMetadata(id="fail_task_0")}
         task_config_class = _FailingTaskConfig
+        benchmark_class = MockCubeBenchmark
 
-    return _FailingBenchmark()
+    return _FailingBenchmarkConfig()
 
 
-def _make_neverending_benchmark(max_steps: int) -> CubeBenchmark:
-    """Benchmark whose single task never sets done=True, triggering MAX_STEPS_REACHED."""
+def _make_neverending_benchmark(max_steps: int) -> CubeBenchmarkConfig:
+    """BenchmarkConfig whose single task never sets done=True, triggering MAX_STEPS_REACHED."""
 
     class _NeverDoneTask(MockCubeTask):
         def step(self, actions):
@@ -53,31 +59,31 @@ def _make_neverending_benchmark(max_steps: int) -> CubeBenchmark:
 
     class _NeverDoneTaskConfig(MockCubeTaskConfig):
         def make(self, runtime_context=None, container_backend=None) -> _NeverDoneTask:
-            from cube.task import TaskMetadata
-
             return _NeverDoneTask(
-                metadata=TaskMetadata(id=self.task_id),
+                metadata=self.metadata,
                 tool_config=self.tool_config or MockToolConfig(),
             )
 
-    class _NeverDoneBenchmark(MockCubeBenchmark):
+    class _NeverDoneBenchmarkConfig(MockCubeBenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(name="neverending", version="0.1.0", description="test")
         task_metadata = {"never_task_0": TaskMetadata(id="never_task_0")}
         task_config_class = _NeverDoneTaskConfig
+        benchmark_class = MockCubeBenchmark
 
-    return _NeverDoneBenchmark()
+    return _NeverDoneBenchmarkConfig()
 
 
-def _make_benchmark(n: int) -> CubeBenchmark:
-    """Create a cube benchmark with n tasks for testing."""
+def _make_benchmark(n: int) -> CubeBenchmarkConfig:
+    """Create a cube BenchmarkConfig with n tasks for testing."""
     task_meta = {f"task_{i}": TaskMetadata(id=f"task_{i}") for i in range(n)}
 
-    class _NTaskBenchmark(MockCubeBenchmark):
+    class _NTaskBenchmarkConfig(MockCubeBenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(name=f"n{n}-task", version="0.1.0", description="test")
         task_metadata = task_meta
         task_config_class = MockCubeTaskConfig
+        benchmark_class = MockCubeBenchmark
 
-    return _NTaskBenchmark()
+    return _NTaskBenchmarkConfig()
 
 
 class TestExpResult:
@@ -137,47 +143,47 @@ class TestExpResult:
 class TestExperiment:
     """Tests for Experiment class."""
 
-    def test_experiment_creation(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_experiment_creation(self, tmp_dir, mock_agent_config, mock_cube_benchmark_config):
         """Test Experiment creation."""
         exp = Experiment(
             name="test_experiment",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
 
         assert exp.name == "test_experiment"
         assert exp.output_dir == tmp_dir
         assert exp.agent_config == mock_agent_config
-        assert exp.benchmark == mock_cube_benchmark
+        assert exp.benchmark_config == mock_cube_benchmark_config
 
-    def test_experiment_config_property(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_experiment_config_property(self, tmp_dir, mock_agent_config, mock_cube_benchmark_config):
         """Test Experiment config property."""
         exp = Experiment(
             name="test_experiment",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
 
         config = exp.config
         assert config["name"] == "test_experiment"
         assert config["output_dir"] == tmp_dir
         assert "agent_config" in config
-        assert "benchmark" in config
+        assert "benchmark_config" in config
 
-    def test_experiment_create_episodes(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_experiment_create_episodes(self, tmp_dir, mock_agent_config, mock_cube_benchmark_config):
         """Test Experiment creates one episode per task in the benchmark."""
         exp = Experiment(
             name="test_experiment",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
 
         episodes = exp.get_episodes_to_run()
 
-        assert len(episodes) == len(mock_cube_benchmark.task_metadata)
+        assert len(episodes) == len(mock_cube_benchmark_config.task_metadata)
         for i, episode in enumerate(episodes):
             assert isinstance(episode, Episode)
             assert episode.config.id == i
@@ -192,7 +198,7 @@ class TestExperiment:
             name="multi_task_exp",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
         )
 
         episodes = exp.get_episodes_to_run()
@@ -200,14 +206,14 @@ class TestExperiment:
         task_ids = {e.config.task_config.task_id for e in episodes}
         assert task_ids == {f"task_{i}" for i in range(5)}
 
-    def test_experiment_save_config(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_experiment_save_config(self, tmp_dir, mock_agent_config, mock_cube_benchmark_config):
         """Test Experiment save_config."""
 
         exp = Experiment(
             name="test_experiment",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
 
         exp.save_config()
@@ -220,7 +226,7 @@ class TestExperiment:
 
         assert saved_config["name"] == "test_experiment"
 
-    def test_experiment_save_config_creates_directory(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_experiment_save_config_creates_directory(self, tmp_dir, mock_agent_config, mock_cube_benchmark_config):
         """Test Experiment save_config creates output directory."""
 
         nested_dir = tmp_dir / "nested" / "output"
@@ -228,7 +234,7 @@ class TestExperiment:
             name="test_experiment",
             output_dir=nested_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
 
         exp.save_config()
@@ -236,14 +242,14 @@ class TestExperiment:
         assert nested_dir.exists()
         assert (nested_dir / "experiment_config.json").exists()
 
-    def test_experiment_serialization(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_experiment_serialization(self, tmp_dir, mock_agent_config, mock_cube_benchmark_config):
         """Test Experiment JSON serialization."""
 
         exp = Experiment(
             name="test_experiment",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
 
         json_str = exp.model_dump_json(serialize_as_any=True)
@@ -251,19 +257,21 @@ class TestExperiment:
 
         assert data["name"] == "test_experiment"
         assert "agent_config" in data
-        assert "benchmark" in data
+        assert "benchmark_config" in data
 
-    def test_experiment_episodes_have_tasks_from_benchmark(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_experiment_episodes_have_tasks_from_benchmark(
+        self, tmp_dir, mock_agent_config, mock_cube_benchmark_config
+    ):
         """Test that created episodes have tasks from benchmark."""
         exp = Experiment(
             name="test_experiment",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
 
         episodes = exp.get_episodes_to_run()
-        expected_task_ids = set(mock_cube_benchmark.task_metadata.keys())
+        expected_task_ids = set(mock_cube_benchmark_config.task_metadata.keys())
         actual_task_ids = {e.config.task_config.task_id for e in episodes}
         assert actual_task_ids == expected_task_ids
 
@@ -275,7 +283,7 @@ class TestExperiment:
             name="test_retry_failed",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
         )
 
         episodes = exp.get_episodes_to_run()
@@ -316,7 +324,7 @@ class TestExperiment:
             name="test_max_retries",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
             max_retries=2,
         )
         episodes = exp.get_episodes_to_run()
@@ -356,7 +364,7 @@ class TestExperiment:
             name="test_resume_unstarted",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
         )
 
         # First call creates all episodes and saves configs
@@ -371,13 +379,13 @@ class TestExperiment:
         resumed_episodes = exp.get_episodes_to_run()
         assert len(resumed_episodes) == 2
 
-    def test_run_sequentially(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_run_sequentially(self, tmp_dir, mock_agent_config, mock_cube_benchmark_config):
         """run_sequentially completes all episodes and returns trajectories keyed by trajectory_id."""
         exp = Experiment(
             name="test_run_sequential",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
 
         result = run_sequentially(exp)
@@ -388,13 +396,13 @@ class TestExperiment:
         assert set(result.trajectories.keys()) == expected_trajectory_ids
         assert result.failures == {}
 
-    def test_resume_and_retry_empty_when_all_succeeded(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_resume_and_retry_empty_when_all_succeeded(self, tmp_dir, mock_agent_config, mock_cube_benchmark_config):
         """resume returns empty when all episodes succeeded."""
         exp = Experiment(
             name="test_no_relaunch",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
 
         # Create episodes and run all successfully
@@ -442,7 +450,9 @@ class TestStatusBasedSelection:
     ) -> None:
         """sweep_stale_statuses marks stale in-flight entries STALE and leaves fresh ones alone."""
         benchmark = _make_benchmark(1)
-        exp = Experiment(name="test_sweep", output_dir=tmp_dir, agent_config=mock_agent_config, benchmark=benchmark)
+        exp = Experiment(
+            name="test_sweep", output_dir=tmp_dir, agent_config=mock_agent_config, benchmark_config=benchmark
+        )
         episodes = exp.get_episodes_to_run()
         traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
         storage = FileStorage(tmp_dir)
@@ -503,7 +513,9 @@ class TestStatusBasedSelection:
     ) -> None:
         """resume=True returns retriable statuses and skips terminal/in-flight ones."""
         benchmark = _make_benchmark(1)
-        exp = Experiment(name="test_sel", output_dir=tmp_dir, agent_config=mock_agent_config, benchmark=benchmark)
+        exp = Experiment(
+            name="test_sel", output_dir=tmp_dir, agent_config=mock_agent_config, benchmark_config=benchmark
+        )
         episodes = exp.get_episodes_to_run()
         traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
         storage = FileStorage(tmp_dir)
@@ -543,7 +555,7 @@ class TestStatusBasedSelection:
             name="test_seq_preclaim",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
         )
         storage = FileStorage(tmp_dir)
 
@@ -571,7 +583,7 @@ class TestStatusBasedSelection:
             name="test_debug_orphan",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
         )
         storage = FileStorage(tmp_dir)
 
@@ -594,7 +606,7 @@ class TestStatusBasedSelection:
             name="test_heartbeat",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
         )
         episodes = exp.get_episodes_to_run()
         traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
@@ -633,7 +645,7 @@ class TestStatusBasedSelection:
             name="test_cancelled_cap",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
             max_retries=2,
         )
         episodes = exp.get_episodes_to_run()
@@ -664,7 +676,7 @@ class TestStatusBasedSelection:
             name="test_stale_cap",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
             max_retries=2,
         )
         episodes = exp.get_episodes_to_run()
@@ -694,7 +706,7 @@ class TestStatusBasedSelection:
             name="test_resume_sweep",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
         )
         episodes = exp.get_episodes_to_run()
         traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
@@ -729,7 +741,7 @@ class TestStatusBasedSelection:
             name="test_resume_sweep_queued",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
         )
         episodes = exp.get_episodes_to_run()
         traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
@@ -762,7 +774,7 @@ class TestStatusBasedSelection:
             name="test_failed_status",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
         )
         episodes = exp.get_episodes_to_run()
         storage = FileStorage(tmp_dir)
@@ -786,7 +798,7 @@ class TestStatusBasedSelection:
             name="test_max_steps_status",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=benchmark,
+            benchmark_config=benchmark,
             max_steps=max_steps,
         )
         episodes = exp.get_episodes_to_run()

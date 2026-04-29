@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 from cube.benchmark import Benchmark as CubeBenchmark
 from cube.benchmark import (  # noqa: F401 — needed for Pydantic to resolve Task's TYPE_CHECKING import
+    BenchmarkConfig as CubeBenchmarkConfig,
+)
+from cube.benchmark import (  # noqa: F401
     BenchmarkMetadata,
     RuntimeContext,
 )
@@ -251,7 +254,17 @@ class MockCubeTaskConfig(CubeTaskConfig):
 
 
 class MockCubeBenchmark(CubeBenchmark):
-    """Cube Benchmark with two inline tasks for testing."""
+    """Live runtime pair for ``MockCubeBenchmarkConfig`` — no shared infrastructure."""
+
+    def _setup(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class MockCubeBenchmarkConfig(CubeBenchmarkConfig):
+    """Cube BenchmarkConfig with two inline tasks for testing."""
 
     benchmark_metadata = BenchmarkMetadata(
         name="mock-cube",
@@ -263,24 +276,19 @@ class MockCubeBenchmark(CubeBenchmark):
         "mock_cube_task_2": TaskMetadata(id="mock_cube_task_2"),
     }
     task_config_class = MockCubeTaskConfig
-
-    def _setup(self) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
+    benchmark_class = MockCubeBenchmark
 
 
 @pytest.fixture
 def mock_cube_task_config() -> MockCubeTaskConfig:
     """Cube task config for mock_cube_task_1."""
-    return MockCubeTaskConfig(task_id="mock_cube_task_1")
+    return MockCubeTaskConfig(metadata=TaskMetadata(id="mock_cube_task_1"))
 
 
 @pytest.fixture
-def mock_cube_benchmark() -> MockCubeBenchmark:
-    """Cube benchmark with two mock tasks."""
-    return MockCubeBenchmark()
+def mock_cube_benchmark_config() -> MockCubeBenchmarkConfig:
+    """Cube benchmark config with two mock tasks."""
+    return MockCubeBenchmarkConfig()
 
 
 @pytest.fixture

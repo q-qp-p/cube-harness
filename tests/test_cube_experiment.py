@@ -9,30 +9,32 @@ from tests.conftest import MockCubeTaskConfig
 class TestCubeExperiment:
     """Tests for Experiment with the cube path (CubeBenchmark)."""
 
-    def test_cube_benchmark_creates_task_config_episodes(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_cube_benchmark_creates_task_config_episodes(self, tmp_dir, mock_agent_config, mock_cube_benchmark_config):
         """Experiment with CubeBenchmark creates episodes with task_config, no DeprecationWarning."""
         exp = Experiment(
             name="cube_experiment",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
             episodes = exp.get_episodes_to_run()
 
-        assert len(episodes) == len(mock_cube_benchmark.task_metadata)
+        assert len(episodes) == len(mock_cube_benchmark_config.task_metadata)
         for episode in episodes:
             assert isinstance(episode.config.task_config, MockCubeTaskConfig)
 
-    def test_cube_benchmark_resume_reloads_without_benchmark_arg(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_cube_benchmark_resume_reloads_without_benchmark_arg(
+        self, tmp_dir, mock_agent_config, mock_cube_benchmark_config
+    ):
         """Experiment.resume with a cube benchmark reloads episodes without needing benchmark arg."""
         exp = Experiment(
             name="cube_resume",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
             resume=True,
         )
 
@@ -49,13 +51,13 @@ class TestCubeExperiment:
         assert resumed[0].config.task_config is not None
         assert resumed[0].config.task_config.task_id != episodes[0].config.task_config.task_id
 
-    def test_experiment_load_config_round_trip(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_experiment_load_config_round_trip(self, tmp_dir, mock_agent_config, mock_cube_benchmark_config):
         """Experiment.save_config / load_config round-trip preserves benchmark type."""
         exp = Experiment(
             name="cube_roundtrip",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
         exp.save_config()
 
@@ -63,15 +65,15 @@ class TestCubeExperiment:
 
         restored = Exp.load_config(str(tmp_dir / "experiment_config.json"))
         assert restored.name == "cube_roundtrip"
-        assert type(restored.benchmark) is type(mock_cube_benchmark)
+        assert type(restored.benchmark_config) is type(mock_cube_benchmark_config)
 
-    def test_episode_is_self_contained_without_benchmark(self, tmp_dir, mock_agent_config, mock_cube_benchmark):
+    def test_episode_is_self_contained_without_benchmark(self, tmp_dir, mock_agent_config, mock_cube_benchmark_config):
         """Episodes created from a cube benchmark can be reloaded without the benchmark arg."""
         exp = Experiment(
             name="self_contained",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            benchmark=mock_cube_benchmark,
+            benchmark_config=mock_cube_benchmark_config,
         )
         episodes = exp.get_episodes_to_run()
         assert len(episodes) > 0

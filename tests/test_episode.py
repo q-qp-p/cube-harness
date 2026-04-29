@@ -184,7 +184,7 @@ class TestEpisode:
             id=0,
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            task_config=TrackCloseConfig(task_id="track_close_task"),
+            task_config=TrackCloseConfig(metadata=TaskMetadata(id="track_close_task")),
         )
         episode.run()
 
@@ -220,7 +220,7 @@ class TestEpisode:
             id=0,
             output_dir=tmp_dir,
             agent_config=config,
-            task_config=TrackCloseConfig(task_id="track_close_error_task"),
+            task_config=TrackCloseConfig(metadata=TaskMetadata(id="track_close_error_task")),
         )
 
         with pytest.raises(RuntimeError, match="Test error"):
@@ -301,7 +301,7 @@ class TestEpisode:
             id=0,
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
-            task_config=ErrorEvalConfig(task_id="error_eval_task"),
+            task_config=ErrorEvalConfig(metadata=TaskMetadata(id="error_eval_task")),
         )
 
         # Episode should raise the error (evaluate() is called when done=True via final_step)
