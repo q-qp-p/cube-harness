@@ -8,9 +8,12 @@ Exports two structured files per experiment, together forming the Atlas EvalLog:
 
 - **`experiment_record.json`** — one JSON object, written once per experiment. Holds
   agent description, benchmark metadata, and git provenance. Does not repeat per episode.
-- **`eval_log.jsonl`** — one JSON line per completed episode. Holds outcome, usage,
-  trajectory summary, and optional judge output. Links to `experiment_record.json` via
-  `experiment_id` FK.
+- **`episodes/<trajectory_id>/episode_record.json`** — one JSON file per completed
+  episode, co-located with trajectory data. Holds outcome, usage, trajectory summary,
+  and optional judge output. Links to `experiment_record.json` via `experiment_id` FK.
+  Retried episodes overwrite stale records naturally.
+- **`to_jsonl(path)`** — submission helper on `EvalLog` that assembles all per-trajectory
+  records into a flat JSONL for ATLAS upload. Call explicitly after `export_eval_log()`.
 
 Both files are plain JSON, readable without any cube-harness dependency.
 
@@ -241,7 +244,7 @@ class EpisodeRecord(TypedBaseModel):
     ) -> "EpisodeRecord"
 ```
 
-One line per episode in `eval_log.jsonl`. Links to `ExperimentRecord` via `experiment_id`.
+One file per episode at `episodes/<trajectory_id>/episode_record.json`. Links to `ExperimentRecord` via `experiment_id`. Retried episodes overwrite stale records since the new trajectory occupies the same directory.
 
 **`task_version_hash`** is the SHA-256 of `TaskConfig.model_dump_json(serialize_as_any=True)`.
 It changes whenever the task config changes, even if `task_id` is unchanged. ATLAS uses it
@@ -356,16 +359,15 @@ distinct from the experiment's working files.
 3. `task_version_hash` covers the full `TaskConfig` JSON, not just the prompt. A task
    whose environment setup changes produces a new hash even if the written instructions
    are identical.
-4. All `EpisodeRecord` rows in a file share the same `experiment_id`, matching the
+4. All `EpisodeRecord` files in an experiment share the same `experiment_id`, matching
    `ExperimentRecord.experiment_id` in the companion `experiment_record.json`.
-5. JSONL lines in `eval_log.jsonl` are self-contained. Appending records to an existing
-   file is safe; the file remains valid JSONL after partial writes.
+5. Lines in the JSONL produced by `to_jsonl()` are self-contained. Each line is a
+   complete `EpisodeRecord`; no cube-harness dependency is required to read the file.
 
 ## Gotchas
 
 - `export_eval_log()` loads all trajectories into memory. For experiments with thousands
-  of episodes, this can be slow. Use `EvalLog.append_episode()` directly inside a custom
-  runner for streaming writes.
+  of episodes, this can be slow.
 - Old trajectories (before the `action_schemas` metadata field was added) yield
   `EpisodeRecord.tool_names = []`. Records are still valid for reward/cost stats.
 - `git_is_dirty = True` means the eval may not reproduce exactly from `git_commit` alone.

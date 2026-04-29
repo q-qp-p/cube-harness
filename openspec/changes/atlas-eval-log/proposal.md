@@ -31,9 +31,10 @@ Three concrete gaps:
 - New module `eval_log.py` with eight public classes.
 - `Episode.run` persists `action_schemas` in `trajectory.metadata` so per-episode
   tool lists can be read post-hoc without re-instantiating tasks.
-- `Experiment.export_eval_log()` writes two files per experiment:
+- `Experiment.export_eval_log()` writes structured records:
   - `experiment_record.json` — once per experiment (agent, benchmark metadata, git provenance)
-  - `eval_log.jsonl` — one JSON line per episode (outcome, usage, trajectory summary)
+  - `episodes/<trajectory_id>/episode_record.json` — one JSON file per episode (outcome, usage, trajectory summary)
+- `EvalLog.to_jsonl(path)` — submission helper that aggregates per-trajectory records into a flat JSONL for ATLAS upload
 - 48 tests, no regressions.
 
 ---
@@ -48,12 +49,15 @@ This split eliminates redundancy: agent description and benchmark metadata appea
 experiment rather than once per episode. For a 500-task benchmark, this is a 500× reduction
 in agent config serialization.
 
-### Why two files instead of one envelope JSONL
+### Why per-trajectory records instead of a flat JSONL
 
-- `eval_log.jsonl` is streamable: records can be appended immediately after each episode
-  without holding the full experiment in memory.
-- `experiment_record.json` is indexable: ATLAS and leaderboards can read agent/benchmark
-  metadata without scanning all episode lines.
+- **Retried episodes overwrite naturally.** A failed episode gets a new trajectory in
+  `episodes/<id>/`; the new `episode_record.json` replaces the old one without any
+  filtering logic at submission time.
+- **`experiment_record.json` is indexable.** ATLAS and leaderboards can read
+  agent/benchmark metadata without scanning episode files.
+- **`to_jsonl()` is an explicit submission step.** Callers produce the flat JSONL on
+  demand rather than maintaining an append-only file that may contain stale entries.
 - Consistent with EEE's two-level schema.
 
 ### MNAR correction via `benchmark_subset`
@@ -109,7 +113,7 @@ was run and how large it was) without requiring submitters to fill in subjective
 }
 ```
 
-### `eval_log.jsonl` (one line per episode)
+### `episodes/<trajectory_id>/episode_record.json` (one file per episode)
 
 ```jsonc
 {
@@ -175,17 +179,17 @@ of `EpisodeRecord.tool_names` without re-instantiating the task.
 <output_dir>/
 ├── experiment_config.json
 ├── experiment_summary.json
-├── experiment_record.json          ← NEW: written by export_eval_log()
+├── experiment_record.json      ← NEW: one JSON object, written by export_eval_log()
 └── episodes/
     └── <trajectory_id>/
         ├── episode_config.json
-        ├── episode_record.json     ← NEW: one per episode, co-located with trajectory
+        ├── episode_record.json ← NEW: one per episode, written by export_eval_log()
         └── ...
 ```
 
-For ATLAS submission, call `eval_log.to_jsonl(path)` to aggregate all episode records
-into a single flat JSONL. This is a separate step so the submission artifact stays
-distinct from the working experiment files.
+For ATLAS submission, call `eval_log.to_jsonl(path)` to assemble a flat JSONL from
+all per-trajectory records. This is a separate step so the submission artifact is
+distinct from the experiment's working files.
 
 ### Interaction with upcoming PRs
 

@@ -39,7 +39,7 @@ re-instantiating the task or environment.
 ### MODIFIED — `Experiment.export_eval_log`
 
 Signature change: `output_path: Path | None` → `output_dir: Path | None` (now writes
-two files instead of one JSONL file).
+structured records instead of a single flat JSONL).
 
 ```python
 def export_eval_log(
@@ -56,7 +56,7 @@ def export_eval_log(
 - Resolves `task_config` from the episode config index for `task_version_hash` and `seed`.
 - Writes to `output_dir` or `self.output_dir` by default:
   - `experiment_record.json` — one JSON object
-  - `eval_log.jsonl` — one JSON line per episode
+  - `episodes/<trajectory_id>/episode_record.json` — one per episode
 - Returns the in-memory `EvalLog`.
 
 No task re-instantiation; all data comes from persisted files.
@@ -96,8 +96,8 @@ Eight public classes:
 | `JudgeOutput` | Per-episode judge assessment: difficulty, feasibility, failure root cause |
 | `Verifier` | Task verifier reference: GitHub URL + source code |
 | `ExperimentRecord` | Experiment-level record → `experiment_record.json` |
-| `EpisodeRecord` | Episode-level record → line in `eval_log.jsonl` |
-| `EvalLog` | Two-level container: `save(output_dir)` / `load(output_dir)` / `append_episode` |
+| `EpisodeRecord` | Episode-level record → `episodes/<id>/episode_record.json` |
+| `EvalLog` | Two-level container: `save(output_dir)` / `load(output_dir)` / `to_jsonl(path)` |
 
 Key invariants:
 
@@ -114,4 +114,5 @@ Key invariants:
 - `EpisodeRecord.tool_names` — read from `trajectory.metadata["action_schemas"]` at export
   time. Empty list for trajectories produced before this field was added.
 - `BenchmarkSubset` — automatically derived from the benchmark object; no user input required.
-- JSONL format: one JSON object per line, no envelope, no cube-harness dependency to read.
+- Per-trajectory storage: retried episodes overwrite stale records naturally since the new trajectory occupies the same directory.
+- `to_jsonl(path)`: submission helper that assembles a flat JSONL from all per-trajectory records. Output is one JSON object per line, no envelope, no cube-harness dependency to read.
