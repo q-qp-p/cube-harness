@@ -16,6 +16,7 @@ from miniwob_cube.task import MiniWobTaskConfig, MiniWobTaskMetadata
 
 logger = logging.getLogger(__name__)
 
+
 class MiniWobBenchmark(Benchmark["MiniWobBenchmarkConfig"]):
     """Runtime pair — owns the local HTTP server process serving MiniWob HTML."""
 
