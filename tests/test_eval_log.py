@@ -57,7 +57,9 @@ def _trajectory(reward: float = 1.0, task_id: str = "t1", n_agent_steps: int = 1
     traj.steps.append(TrajectoryStep(output=_env_output(reward=0.0, done=False), start_time=100.0, end_time=101.0))
     for _ in range(n_agent_steps):
         traj.steps.append(TrajectoryStep(output=AgentOutput(actions=[]), start_time=101.0, end_time=102.0))
-    traj.steps.append(TrajectoryStep(output=_env_output(reward=reward, done=reward > 0), start_time=102.0, end_time=103.0))
+    traj.steps.append(
+        TrajectoryStep(output=_env_output(reward=reward, done=reward > 0), start_time=102.0, end_time=103.0)
+    )
     return traj
 
 

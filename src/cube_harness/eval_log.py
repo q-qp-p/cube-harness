@@ -89,24 +89,24 @@ def _get_git_info(cwd: str | None = None) -> tuple[str | None, str | None, bool 
     from git_commit alone).
     """
     try:
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=cwd, stderr=subprocess.DEVNULL
-        ).decode().strip()
+        commit = (
+            subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cwd, stderr=subprocess.DEVNULL).decode().strip()
+        )
     except Exception:
         return None, None, None
 
     try:
-        remote = subprocess.check_output(
-            ["git", "remote", "get-url", "origin"], cwd=cwd, stderr=subprocess.DEVNULL
-        ).decode().strip()
+        remote = (
+            subprocess.check_output(["git", "remote", "get-url", "origin"], cwd=cwd, stderr=subprocess.DEVNULL)
+            .decode()
+            .strip()
+        )
         github_url = _to_github_url(remote, commit)
     except Exception:
         github_url = None
 
     try:
-        is_dirty = subprocess.call(
-            ["git", "diff", "--quiet", "HEAD"], cwd=cwd, stderr=subprocess.DEVNULL
-        ) != 0
+        is_dirty = subprocess.call(["git", "diff", "--quiet", "HEAD"], cwd=cwd, stderr=subprocess.DEVNULL) != 0
     except Exception:
         is_dirty = None
 
@@ -317,7 +317,9 @@ class ExperimentRecord(TypedBaseModel):
     metadata, git provenance. EpisodeRecord links to this via evaluation_id.
     """
 
-    evaluation_id: str = Field(description="output_dir.name — unique per run (includes UUID suffix from make_experiment_output_dir).")
+    evaluation_id: str = Field(
+        description="output_dir.name — unique per run (includes UUID suffix from make_experiment_output_dir)."
+    )
     experiment_name: str = Field(description="Experiment name as set in Experiment.name.")
     evaluation_timestamp: float = Field(description="Experiment start time as Unix timestamp.")
     eval_library: EvalLibrary = Field(description="Library that produced the evaluation.")
@@ -441,9 +443,7 @@ class EpisodeRecord(TypedBaseModel):
         sample_hash: str | None = None
         seed: int | None = None
         if task_config is not None:
-            sample_hash = hashlib.sha256(
-                task_config.model_dump_json(serialize_as_any=True).encode()
-            ).hexdigest()
+            sample_hash = hashlib.sha256(task_config.model_dump_json(serialize_as_any=True).encode()).hexdigest()
             seed = getattr(task_config, "seed", None)
 
         split: str | None = None
@@ -507,9 +507,7 @@ class EvalLog(TypedBaseModel):
     def load(cls, output_dir: Path) -> "EvalLog":
         """Load experiment_record.json and all per-trajectory episode_record.json files."""
         output_dir = Path(output_dir)
-        experiment = ExperimentRecord.model_validate_json(
-            (output_dir / EXPERIMENT_RECORD_FILENAME).read_text()
-        )
+        experiment = ExperimentRecord.model_validate_json((output_dir / EXPERIMENT_RECORD_FILENAME).read_text())
         episodes: list[EpisodeRecord] = []
         episodes_dir = output_dir / _EPISODES_DIR
         if episodes_dir.exists():
