@@ -28,6 +28,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from cube.core import TypedBaseModel
 from pydantic import Field
@@ -145,11 +146,6 @@ def _extract_error_type(trajectory: Trajectory) -> str | None:
         if hasattr(step.output, "error") and step.output.error is not None:
             return step.output.error.error_type
     return None
-
-
-def compute_evaluation_id(exp_name: str, output_dir: Path) -> str:
-    """Return a stable 16-char evaluation_id from experiment name + output dir."""
-    return hashlib.sha256(f"{exp_name}{output_dir}".encode()).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +344,7 @@ class ExperimentRecord(TypedBaseModel):
         bm_version = getattr(bm_metadata, "version", None) if bm_metadata else None
 
         return cls(
-            evaluation_id=compute_evaluation_id(exp_name, output_dir),
+            evaluation_id=f"{exp_name}_{uuid4().hex[:8]}",
             experiment_name=exp_name,
             evaluation_timestamp=time.time(),
             eval_library=EvalLibrary(version=harness_version),

@@ -23,7 +23,6 @@ from cube_harness.eval_log import (
     _extract_llm_model,
     _extract_tool_names,
     _to_github_url,
-    compute_evaluation_id,
 )
 
 # ---------------------------------------------------------------------------
@@ -175,22 +174,6 @@ def test_to_github_url_strips_git_suffix() -> None:
 
 
 # ---------------------------------------------------------------------------
-# compute_evaluation_id
-# ---------------------------------------------------------------------------
-
-
-def test_compute_evaluation_id_stable(tmp_dir: Path) -> None:
-    id1 = compute_evaluation_id("my_exp", tmp_dir)
-    id2 = compute_evaluation_id("my_exp", tmp_dir)
-    assert id1 == id2
-    assert len(id1) == 16
-
-
-def test_compute_evaluation_id_varies_by_name(tmp_dir: Path) -> None:
-    assert compute_evaluation_id("exp_a", tmp_dir) != compute_evaluation_id("exp_b", tmp_dir)
-
-
-# ---------------------------------------------------------------------------
 # EvalLibrary
 # ---------------------------------------------------------------------------
 
@@ -307,11 +290,11 @@ def test_benchmark_subset_unknown_benchmark() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_experiment_record_evaluation_id_is_stable(mock_agent_config, mock_cube_benchmark, tmp_dir) -> None:
-    rec1 = ExperimentRecord.from_experiment("my_exp", tmp_dir, mock_agent_config, mock_cube_benchmark)
-    rec2 = ExperimentRecord.from_experiment("my_exp", tmp_dir, mock_agent_config, mock_cube_benchmark)
-    assert rec1.evaluation_id == rec2.evaluation_id
-    assert len(rec1.evaluation_id) == 16
+def test_experiment_record_evaluation_id_format(mock_agent_config, mock_cube_benchmark, tmp_dir) -> None:
+    rec = ExperimentRecord.from_experiment("my_exp", tmp_dir, mock_agent_config, mock_cube_benchmark)
+    # format: "{exp_name}_{8 hex chars}"
+    assert rec.evaluation_id.startswith("my_exp_")
+    assert len(rec.evaluation_id) == len("my_exp_") + 8
 
 
 def test_experiment_record_fields(mock_agent_config, mock_cube_benchmark, tmp_dir) -> None:
