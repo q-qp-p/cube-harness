@@ -480,14 +480,14 @@ class TestStatusBasedSelection:
         "status,extra_fields,expect_returned",
         [
             # retriable — resume must include
-            ("FAILED",    {},                     True),
-            ("CANCELLED", {},                     True),
-            ("STALE",     {},                     True),
+            ("FAILED", {}, True),
+            ("CANCELLED", {}, True),
+            ("STALE", {}, True),
             # terminal non-retriable — resume must skip
-            ("COMPLETED",         {"reward": 1.0, "ended_at": 0}, False),
+            ("COMPLETED", {"reward": 1.0, "ended_at": 0}, False),
             ("MAX_STEPS_REACHED", {"reward": 0.0, "ended_at": 0}, False),
             # in-flight — resume must skip (not swept; fresh timestamps)
-            ("QUEUED",  {},                       False),
+            ("QUEUED", {}, False),
             ("RUNNING", {"last_heartbeat_at": 0}, False),
         ],
         ids=["failed", "cancelled", "stale", "completed", "max-steps-reached", "queued", "running"],
@@ -596,9 +596,9 @@ class TestStatusBasedSelection:
             storage.write_episode_status(traj_id, s)
 
         final = storage.read_episode_status(traj_id)
-        assert final.status == "RUNNING"       # status unchanged
-        assert final.current_step == 2         # advanced through two turns
-        assert final.last_heartbeat_at > t0    # heartbeat is newer than start
+        assert final.status == "RUNNING"  # status unchanged
+        assert final.current_step == 2  # advanced through two turns
+        assert final.last_heartbeat_at > t0  # heartbeat is newer than start
 
     def test_cancelled_at_max_retries_cap_is_terminal(self, tmp_dir, mock_agent_config):
         """CANCELLED → terminal: retry_count >= max_retries excludes from retry selection."""
@@ -821,9 +821,11 @@ class TestKillStaleWorkersRaceGuard:
         episodes_in_progress = [fake_ref]
 
         # First read: stale RUNNING. Second read (after ray.cancel): COMPLETED.
-        with patch("cube_harness.exp_runner.ray.cancel") as mock_cancel, patch.object(
-            storage, "read_episode_status", side_effect=[stale_status, completed_status]
-        ), patch.object(storage, "write_episode_status") as mock_write:
+        with (
+            patch("cube_harness.exp_runner.ray.cancel") as mock_cancel,
+            patch.object(storage, "read_episode_status", side_effect=[stale_status, completed_status]),
+            patch.object(storage, "write_episode_status") as mock_write,
+        ):
             _kill_stale_workers(
                 episodes_in_progress,
                 ref_to_traj_id,
@@ -856,9 +858,11 @@ class TestKillStaleWorkersRaceGuard:
         episodes_in_progress = [fake_ref]
 
         # Both reads return RUNNING — worker never wrote a terminal status.
-        with patch("cube_harness.exp_runner.ray.cancel"), patch.object(
-            storage, "read_episode_status", side_effect=[stale_status, stale_status]
-        ), patch.object(storage, "write_episode_status") as mock_write:
+        with (
+            patch("cube_harness.exp_runner.ray.cancel"),
+            patch.object(storage, "read_episode_status", side_effect=[stale_status, stale_status]),
+            patch.object(storage, "write_episode_status") as mock_write,
+        ):
             _kill_stale_workers(
                 episodes_in_progress,
                 ref_to_traj_id,
