@@ -149,7 +149,7 @@ wheels = [
 [[package]]
 name = "cube-standard"
 version = "0.1.0rc7"
-source = { git = "https://github.com/The-AI-Alliance/cube-standard?branch=nico_fix#1039e14fe3923831ba36c60391667bb8bf477a7c" }
+source = { git = "https://github.com/The-AI-Alliance/cube-standard?branch=nico_fix#afde103fd18c754319219da8eaa8986065b41193" }
 dependencies = [
     { name = "docstring-parser" },
     { name = "fastapi" },
