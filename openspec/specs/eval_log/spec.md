@@ -267,21 +267,22 @@ class EvalLog(TypedBaseModel):
     episodes: list[EpisodeRecord] = []
 
     def save(self, output_dir: Path) -> None
-    # Writes experiment_record.json and eval_log.jsonl to output_dir.
+    # Writes experiment_record.json and episodes/<trajectory_id>/episode_record.json.
 
     @classmethod
     def load(cls, output_dir: Path) -> "EvalLog"
-    # Loads both files from output_dir.
+    # Reads experiment_record.json and all episodes/*/episode_record.json.
 
-    @staticmethod
-    def append_episode(record: EpisodeRecord, path: Path) -> None
-    # Appends a single EpisodeRecord to a JSONL file (streaming mode).
-    # Not safe for concurrent multi-process writes without external file locking.
+    def to_jsonl(self, path: Path) -> None
+    # Aggregates all episode records into a flat JSONL file for ATLAS submission.
+    # Each line is a self-contained EpisodeRecord; no cube-harness dependency to read.
 ```
 
-Two-level container. `save()` creates two files; `load()` reads both.
-`append_episode()` is for streaming use cases where records should be written immediately
-after each episode without holding the full log in memory.
+Two-level container. Episode records are co-located with trajectory data in
+`episodes/<trajectory_id>/` — retried episodes naturally overwrite stale records
+since the new trajectory occupies the same directory. `to_jsonl()` is the submission
+helper: call it after `export_eval_log()` or after loading an existing eval log to
+produce a flat file for ATLAS upload.
 
 ---
 
@@ -327,16 +328,22 @@ Resolution order for `task_metadata` fields:
 <output_dir>/
 ├── experiment_config.json
 ├── experiment_summary.json
-├── experiment_record.json      ← one JSON object; written by export_eval_log()
-├── eval_log.jsonl              ← one JSON line per completed episode
+├── experiment_record.json          ← written by export_eval_log()
 └── episodes/
     └── <trajectory_id>/
         ├── episode_config.json
+        ├── episode_record.json     ← written by export_eval_log(), one per episode
         └── ...
 ```
 
-Both files are written atomically by `EvalLog.save()`. They are not written incrementally
-during the run; call `EvalLog.append_episode()` directly for streaming use cases.
+`EvalLog.save(output_dir)` writes `experiment_record.json` at the top level and
+`episode_record.json` inside each trajectory directory. Episode records are co-located
+with trajectory data: if an episode is retried, the new trajectory's record naturally
+replaces the old one without leaving stale flat-file entries.
+
+For ATLAS submission, call `eval_log.to_jsonl(path)` to assemble a single flat JSONL
+from the per-trajectory records. This is a separate step to keep the submission artifact
+distinct from the experiment's working files.
 
 ---
 

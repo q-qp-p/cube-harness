@@ -175,13 +175,17 @@ of `EpisodeRecord.tool_names` without re-instantiating the task.
 <output_dir>/
 ├── experiment_config.json
 ├── experiment_summary.json
-├── experiment_record.json      ← NEW: one JSON object, written by export_eval_log()
-├── eval_log.jsonl              ← NEW: one JSON line per episode
+├── experiment_record.json          ← NEW: written by export_eval_log()
 └── episodes/
     └── <trajectory_id>/
         ├── episode_config.json
+        ├── episode_record.json     ← NEW: one per episode, co-located with trajectory
         └── ...
 ```
+
+For ATLAS submission, call `eval_log.to_jsonl(path)` to aggregate all episode records
+into a single flat JSONL. This is a separate step so the submission artifact stays
+distinct from the working experiment files.
 
 ### Interaction with upcoming PRs
 

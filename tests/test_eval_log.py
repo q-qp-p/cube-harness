@@ -402,7 +402,7 @@ def test_eval_log_save_and_load(mock_agent_config, mock_cube_benchmark, tmp_dir)
         out_dir = Path(out)
         log.save(out_dir)
         assert (out_dir / "experiment_record.json").exists()
-        assert (out_dir / "eval_log.jsonl").exists()
+        assert (out_dir / "episodes" / "task-a_ep0" / "episode_record.json").exists()
         loaded = EvalLog.load(out_dir)
 
     assert loaded.experiment.experiment_id == exp_rec.experiment_id
@@ -410,17 +410,17 @@ def test_eval_log_save_and_load(mock_agent_config, mock_cube_benchmark, tmp_dir)
     assert loaded.episodes[0].trajectory_id == "task-a_ep0"
 
 
-def test_eval_log_episode_jsonl_is_valid_json_per_line(mock_agent_config, mock_cube_benchmark, tmp_dir) -> None:
+def test_eval_log_episode_record_is_valid_json(mock_agent_config, mock_cube_benchmark, tmp_dir) -> None:
     traj = _trajectory(reward=0.5)
     exp_rec = ExperimentRecord.from_experiment("test_exp", tmp_dir, mock_agent_config, mock_cube_benchmark)
     ep_rec = EpisodeRecord.from_trajectory(traj, experiment_id=exp_rec.experiment_id)
     log = EvalLog(experiment=exp_rec, episodes=[ep_rec])
 
     with tempfile.TemporaryDirectory() as out:
-        log.save(Path(out))
-        lines = (Path(out) / "eval_log.jsonl").read_text().strip().splitlines()
-        assert len(lines) == 1
-        parsed = json.loads(lines[0])
+        out_dir = Path(out)
+        log.save(out_dir)
+        record_path = out_dir / "episodes" / "t1_ep0" / "episode_record.json"
+        parsed = json.loads(record_path.read_text())
 
     assert "experiment_id" in parsed
     assert "task_id" in parsed
@@ -440,18 +440,18 @@ def test_eval_log_experiment_record_is_valid_json(mock_agent_config, mock_cube_b
     assert "benchmark_subset" in parsed
 
 
-def test_eval_log_append_episode(mock_agent_config, mock_cube_benchmark, tmp_dir) -> None:
+def test_eval_log_to_jsonl(mock_agent_config, mock_cube_benchmark, tmp_dir) -> None:
     traj1 = _trajectory(reward=1.0, task_id="t1")
     traj2 = _trajectory(reward=0.0, task_id="t2")
     exp_rec = ExperimentRecord.from_experiment("test_exp", tmp_dir, mock_agent_config, mock_cube_benchmark)
     rec1 = EpisodeRecord.from_trajectory(traj1, experiment_id=exp_rec.experiment_id)
     rec2 = EpisodeRecord.from_trajectory(traj2, experiment_id=exp_rec.experiment_id)
+    log = EvalLog(experiment=exp_rec, episodes=[rec1, rec2])
 
     with tempfile.TemporaryDirectory() as out:
-        out_path = Path(out) / "eval_log.jsonl"
-        EvalLog.append_episode(rec1, out_path)
-        EvalLog.append_episode(rec2, out_path)
-        lines = out_path.read_text().strip().splitlines()
+        jsonl_path = Path(out) / "submission.jsonl"
+        log.to_jsonl(jsonl_path)
+        lines = jsonl_path.read_text().strip().splitlines()
 
     assert len(lines) == 2
     task_ids = {json.loads(line)["task_id"] for line in lines}
@@ -490,7 +490,7 @@ def test_verifier_roundtrip() -> None:
 
 
 def test_export_eval_log_integration(tmp_dir, mock_agent_config, mock_cube_benchmark) -> None:
-    """Full experiment run followed by export_eval_log produces correct two-level output."""
+    """Full experiment run → export_eval_log → to_jsonl produces correct two-level output."""
     from cube_harness.exp_runner import run_sequentially
     from cube_harness.experiment import Experiment
 
@@ -504,26 +504,32 @@ def test_export_eval_log_integration(tmp_dir, mock_agent_config, mock_cube_bench
 
     eval_log = exp.export_eval_log(tmp_dir)
 
+    # experiment_record.json written at top level
     exp_record_path = tmp_dir / "experiment_record.json"
-    eval_log_path = tmp_dir / "eval_log.jsonl"
     assert exp_record_path.exists(), "experiment_record.json was not created"
-    assert eval_log_path.exists(), "eval_log.jsonl was not created"
-
     exp_data = json.loads(exp_record_path.read_text())
     assert exp_data["experiment_name"] == "integration_test"
     assert "agent" in exp_data
     assert exp_data["benchmark_subset"]["n_tasks"] == 2
 
-    lines = eval_log_path.read_text().strip().splitlines()
-    assert len(lines) == 2, f"Expected 2 episode records, got {len(lines)}"
+    # episode_record.json written per trajectory directory
+    episode_records = list((tmp_dir / "episodes").glob("*/episode_record.json"))
+    assert len(episode_records) == 2, f"Expected 2 episode records, got {len(episode_records)}"
 
     experiment_id = eval_log.experiment.experiment_id
-    for line in lines:
-        episode = json.loads(line)
+    for record_path in episode_records:
+        episode = json.loads(record_path.read_text())
         assert episode["experiment_id"] == experiment_id
         assert episode["reward"] == pytest.approx(1.0)
         assert episode["success"] is True
 
+    # load() reconstructs from per-trajectory files
     loaded = EvalLog.load(tmp_dir)
     assert loaded.experiment.experiment_id == experiment_id
     assert len(loaded.episodes) == 2
+
+    # to_jsonl() assembles flat submission file
+    jsonl_path = tmp_dir / "submission.jsonl"
+    eval_log.to_jsonl(jsonl_path)
+    lines = jsonl_path.read_text().strip().splitlines()
+    assert len(lines) == 2

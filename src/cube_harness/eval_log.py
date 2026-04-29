@@ -454,52 +454,65 @@ class EpisodeRecord(TypedBaseModel):
         )
 
 
+EPISODE_RECORD_FILENAME = "episode_record.json"
+EXPERIMENT_RECORD_FILENAME = "experiment_record.json"
+_EPISODES_DIR = "episodes"
+
+
 class EvalLog(TypedBaseModel):
-    """Two-level eval log container with JSONL serialization.
+    """Two-level eval log container.
 
     Experiment-level data goes to experiment_record.json (written once).
-    Episode-level data goes to eval_log.jsonl (one JSON object per line).
+    Episode-level data goes to episodes/<trajectory_id>/episode_record.json
+    (one file per episode, co-located with the trajectory).
 
-    Both files are plain JSON, readable by any framework without a cube-harness dependency.
+    All files are plain JSON, readable without a cube-harness dependency.
+
+    For ATLAS submission, call to_jsonl() to aggregate episode records into a
+    single flat JSONL file.
     """
 
     experiment: ExperimentRecord
     episodes: list[EpisodeRecord] = Field(default_factory=list)
 
     def save(self, output_dir: Path) -> None:
-        """Write experiment_record.json and eval_log.jsonl to output_dir."""
+        """Write experiment_record.json and per-trajectory episode_record.json files."""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        exp_path = output_dir / "experiment_record.json"
+        exp_path = output_dir / EXPERIMENT_RECORD_FILENAME
         exp_path.write_text(self.experiment.model_dump_json(indent=2))
-        episodes_path = output_dir / "eval_log.jsonl"
-        with open(episodes_path, "w") as f:
-            for record in self.episodes:
-                f.write(record.model_dump_json() + "\n")
+        for record in self.episodes:
+            ep_dir = output_dir / _EPISODES_DIR / record.trajectory_id
+            ep_dir.mkdir(parents=True, exist_ok=True)
+            (ep_dir / EPISODE_RECORD_FILENAME).write_text(record.model_dump_json(indent=2))
         logger.info(f"Saved experiment record to {exp_path}")
-        logger.info(f"Saved {len(self.episodes)} episode records to {episodes_path}")
+        logger.info(f"Saved {len(self.episodes)} episode records under {output_dir / _EPISODES_DIR}")
 
     @classmethod
     def load(cls, output_dir: Path) -> "EvalLog":
-        """Load experiment_record.json and eval_log.jsonl from output_dir."""
+        """Load experiment_record.json and all per-trajectory episode_record.json files."""
         output_dir = Path(output_dir)
-        experiment = ExperimentRecord.model_validate_json((output_dir / "experiment_record.json").read_text())
+        experiment = ExperimentRecord.model_validate_json(
+            (output_dir / EXPERIMENT_RECORD_FILENAME).read_text()
+        )
         episodes: list[EpisodeRecord] = []
-        with open(output_dir / "eval_log.jsonl") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    episodes.append(EpisodeRecord.model_validate_json(line))
+        episodes_dir = output_dir / _EPISODES_DIR
+        if episodes_dir.exists():
+            for ep_dir in sorted(episodes_dir.iterdir()):
+                record_path = ep_dir / EPISODE_RECORD_FILENAME
+                if ep_dir.is_dir() and record_path.exists():
+                    episodes.append(EpisodeRecord.model_validate_json(record_path.read_text()))
         return cls(experiment=experiment, episodes=episodes)
 
-    @staticmethod
-    def append_episode(record: EpisodeRecord, path: Path) -> None:
-        """Append a single EpisodeRecord to a JSONL file (streaming mode).
+    def to_jsonl(self, path: Path) -> None:
+        """Write all episode records as a flat JSONL file for ATLAS submission.
 
-        Suitable for writing records immediately after each episode without holding the full
-        log in memory. Not safe for concurrent multi-process writes without external file locking.
+        Each line is a self-contained EpisodeRecord JSON object. No cube-harness
+        dependency required to read the output.
         """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a") as f:
-            f.write(record.model_dump_json() + "\n")
+        with open(path, "w") as f:
+            for record in self.episodes:
+                f.write(record.model_dump_json() + "\n")
+        logger.info(f"Exported {len(self.episodes)} episode records to {path}")

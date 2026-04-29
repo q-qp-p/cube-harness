@@ -69,12 +69,15 @@ No task re-instantiation; all data comes from persisted files.
 
 ```
 <output_dir>/
-├── experiment_record.json    ← ADDED: ExperimentRecord (once per experiment)
-├── eval_log.jsonl            ← ADDED: one EpisodeRecord JSON line per completed episode
+├── experiment_record.json                    ← ADDED: ExperimentRecord (once per experiment)
+└── episodes/
+    └── <trajectory_id>/
+        └── episode_record.json               ← ADDED: one per completed episode
 ```
 
 Written by `Experiment.export_eval_log()`. Not written automatically during runs;
-must be called explicitly post-experiment.
+must be called explicitly post-experiment. For ATLAS submission, call
+`eval_log.to_jsonl(path)` to assemble a flat JSONL from the per-trajectory records.
 
 ---
 
