@@ -1,4 +1,3 @@
-import json
 import logging
 import time
 from pathlib import Path
@@ -15,7 +14,7 @@ from cube_harness.agent import AgentConfig
 from cube_harness.core import AgentOutput, Trajectory, TrajectoryStep
 from cube_harness.episode_logs import trajectory_log_id
 from cube_harness.episode_status import TERMINAL_STATUSES, EpisodeStatus, next_retry_count
-from cube_harness.eval_log import EXPERIMENT_RECORD_FILENAME, EpisodeRecord
+from cube_harness.eval_log import EpisodeRecord
 from cube_harness.metrics.tracer import get_tracer
 from cube_harness.storage import EPISODES_DIR, FileStorage, Storage
 from cube_harness.summary import SummaryProcessor
@@ -289,11 +288,9 @@ class Episode:
                 self.storage.save_trajectory(trajectory)
                 summary_proc.on_episode_complete(trajectory, self.storage)
                 try:
-                    exp_record_path = self.config.output_dir / EXPERIMENT_RECORD_FILENAME
-                    evaluation_id = json.loads(exp_record_path.read_text())["evaluation_id"]
                     ep_record = EpisodeRecord.from_trajectory(
                         trajectory,
-                        evaluation_id=evaluation_id,
+                        evaluation_id=self.config.output_dir.name,
                         task_config=self.config.task_config,
                     )
                     ep_record.write(self.config.output_dir)

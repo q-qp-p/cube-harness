@@ -28,7 +28,6 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from cube.core import TypedBaseModel
 from pydantic import Field
@@ -344,7 +343,7 @@ class ExperimentRecord(TypedBaseModel):
         bm_version = getattr(bm_metadata, "version", None) if bm_metadata else None
 
         return cls(
-            evaluation_id=f"{exp_name}_{uuid4().hex[:8]}",
+            evaluation_id=Path(output_dir).name,
             experiment_name=exp_name,
             evaluation_timestamp=time.time(),
             eval_library=EvalLibrary(version=harness_version),

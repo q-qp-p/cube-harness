@@ -38,6 +38,10 @@ class Experiment(TypedBaseModel):
     git_cwd: str | None = None
 
     @property
+    def evaluation_id(self) -> str:
+        return self.output_dir.name
+
+    @property
     def config(self) -> dict:
         return self.model_dump(serialize_as_any=True)
 

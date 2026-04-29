@@ -2,6 +2,7 @@ import os
 import time
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from uuid import uuid4
 
 try:
     __version__ = version("cube-harness")
@@ -39,6 +40,7 @@ def make_experiment_output_dir(
         parts.append(llm_name)
     if tag:
         parts.append(tag)
+    parts.append(uuid4().hex[:8])
     dir_name = "_".join(parts)
     path = EXP_DIR / dir_name
     path.mkdir(parents=True, exist_ok=True)

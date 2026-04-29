@@ -290,11 +290,9 @@ def test_benchmark_subset_unknown_benchmark() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_experiment_record_evaluation_id_format(mock_agent_config, mock_cube_benchmark, tmp_dir) -> None:
+def test_experiment_record_evaluation_id_is_dir_name(mock_agent_config, mock_cube_benchmark, tmp_dir) -> None:
     rec = ExperimentRecord.from_experiment("my_exp", tmp_dir, mock_agent_config, mock_cube_benchmark)
-    # format: "{exp_name}_{8 hex chars}"
-    assert rec.evaluation_id.startswith("my_exp_")
-    assert len(rec.evaluation_id) == len("my_exp_") + 8
+    assert rec.evaluation_id == tmp_dir.name
 
 
 def test_experiment_record_fields(mock_agent_config, mock_cube_benchmark, tmp_dir) -> None:
