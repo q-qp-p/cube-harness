@@ -44,7 +44,7 @@ dependencies = [
 ]
 
 [project.entry-points."cube.benchmarks"]
-osworld-cube = "osworld_cube.benchmark:OSWorldBenchmark"
+osworld-cube = "osworld_cube.benchmark:OSWorldBenchmarkConfig"
 
 [project.optional-dependencies]
 azure = [

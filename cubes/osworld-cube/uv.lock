@@ -479,7 +479,7 @@ wheels = [
 [[package]]
 name = "cube-computer-tool"
 version = "0.2.0"
-source = { git = "https://github.com/The-AI-Alliance/cube-standard?subdirectory=cube-tools%2Fcube-computer-tool&branch=nico_fix#1039e14fe3923831ba36c60391667bb8bf477a7c" }
+source = { git = "https://github.com/The-AI-Alliance/cube-standard?subdirectory=cube-tools%2Fcube-computer-tool&branch=nico_fix#afde103fd18c754319219da8eaa8986065b41193" }
 dependencies = [
     { name = "cube-standard" },
     { name = "pillow" },
@@ -491,7 +491,7 @@ dependencies = [
 [[package]]
 name = "cube-infra-aws"
 version = "0.1.0"
-source = { git = "https://github.com/The-AI-Alliance/cube-standard?subdirectory=cube-resources%2Fcube-infra-aws&branch=nico_fix#1039e14fe3923831ba36c60391667bb8bf477a7c" }
+source = { git = "https://github.com/The-AI-Alliance/cube-standard?subdirectory=cube-resources%2Fcube-infra-aws&branch=nico_fix#afde103fd18c754319219da8eaa8986065b41193" }
 dependencies = [
     { name = "boto3" },
     { name = "botocore" },
@@ -502,7 +502,7 @@ dependencies = [
 [[package]]
 name = "cube-infra-azure"
 version = "0.1.0"
-source = { git = "https://github.com/The-AI-Alliance/cube-standard?subdirectory=cube-resources%2Fcube-infra-azure&branch=nico_fix#1039e14fe3923831ba36c60391667bb8bf477a7c" }
+source = { git = "https://github.com/The-AI-Alliance/cube-standard?subdirectory=cube-resources%2Fcube-infra-azure&branch=nico_fix#afde103fd18c754319219da8eaa8986065b41193" }
 dependencies = [
     { name = "azure-identity" },
     { name = "azure-mgmt-compute" },
@@ -517,7 +517,7 @@ dependencies = [
 [[package]]
 name = "cube-standard"
 version = "0.1.0rc7"
-source = { git = "https://github.com/The-AI-Alliance/cube-standard?branch=nico_fix#1039e14fe3923831ba36c60391667bb8bf477a7c" }
+source = { git = "https://github.com/The-AI-Alliance/cube-standard?branch=nico_fix#afde103fd18c754319219da8eaa8986065b41193" }
 dependencies = [
     { name = "docstring-parser" },
     { name = "fastapi" },
@@ -534,7 +534,7 @@ dependencies = [
 [[package]]
 name = "cube-vm-backend"
 version = "0.2.1"
-source = { git = "https://github.com/The-AI-Alliance/cube-standard?subdirectory=cube-resources%2Fcube-vm-backend&branch=nico_fix#1039e14fe3923831ba36c60391667bb8bf477a7c" }
+source = { git = "https://github.com/The-AI-Alliance/cube-standard?subdirectory=cube-resources%2Fcube-vm-backend&branch=nico_fix#afde103fd18c754319219da8eaa8986065b41193" }
 dependencies = [
     { name = "cube-standard" },
     { name = "requests" },
