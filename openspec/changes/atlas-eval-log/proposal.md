@@ -39,8 +39,9 @@ Three concrete gaps:
   `<output_dir>/eval_log.jsonl`.
 - 42 unit tests, no regressions.
 
-Fields are named to mirror EEE destinations (see forward-compatibility map) so adapting
-to Elron's schema review is a small rename-and-nest, not a redesign.
+Fields are designed to align with EEE's instance-level schema. Pending Elron's review
+of the open questions below, field names may be adjusted directly — no migration needed
+since this PR has never been merged or used in production.
 
 ---
 
@@ -235,24 +236,6 @@ persisted trajectories and episode configs.
   `export_eval_log` reads status indirectly via `list_trajectory_ids()` — if #315 lands
   first, we can filter on `COMPLETED` status instead of scanning trajectories.
 - **PR #314 (env-cube credentials):** no overlap.
-
----
-
-## EEE Forward-Compatibility Map
-
-| v1 field | v2 EEE destination | Notes |
-|---|---|---|
-| `task.benchmark_id` / `task.benchmark_name` | `evaluation_name` | slugified name |
-| `task.task_id` | `sample_id` | open question: semantic vs numeric key |
-| `task.task_version_hash` | `sample_hash` | scope difference (full config vs input hash) |
-| `task.seed` | `eval_conditions.seed` (Elron's ext) | |
-| `task.split` / `task.benchmark_version` / `task.benchmark_tags` | `metadata` (string escape hatch) | |
-| `task.first_observation_text` | new top-level field | needs EEE schema extension |
-| `agent.*` | `agent_system.*` (Elron's ext) | nested + renamed |
-| `reward` | `evaluation.score` | rename |
-| `reward_breakdown` | `evaluation.breakdown` | nest inside `evaluation` |
-| `usage.*` | `session_accounting.*` (Elron's ext) | renamed fields |
-| `declaration` | new top-level field | needs EEE schema extension |
 
 ---
 
