@@ -2,7 +2,9 @@
 
 import json
 import time
+from unittest.mock import MagicMock, patch
 
+import pytest
 from cube.benchmark import Benchmark as CubeBenchmark
 from cube.benchmark import BenchmarkMetadata
 from cube.core import EnvironmentOutput, Observation
@@ -11,10 +13,58 @@ from cube.task import TaskMetadata
 from cube_harness.core import Trajectory, TrajectoryStep
 from cube_harness.episode import Episode
 from cube_harness.episode_status import EpisodeStatus
-from cube_harness.exp_runner import run_sequentially
+from cube_harness.exp_runner import _kill_stale_workers, run_sequentially
 from cube_harness.experiment import Experiment, ExpResult, sweep_stale_statuses
 from cube_harness.storage import FileStorage
-from tests.conftest import MockCubeBenchmark, MockCubeTaskConfig
+from tests.conftest import MockCubeBenchmark, MockCubeTask, MockCubeTaskConfig, MockToolConfig
+
+
+def _make_failing_benchmark() -> CubeBenchmark:
+    """Benchmark whose single task raises on the first step() call."""
+
+    class _FailingTask(MockCubeTask):
+        def step(self, actions):
+            raise RuntimeError("injected step failure")
+
+    class _FailingTaskConfig(MockCubeTaskConfig):
+        def make(self, runtime_context=None, container_backend=None) -> _FailingTask:
+            from cube.task import TaskMetadata
+
+            return _FailingTask(
+                metadata=TaskMetadata(id=self.task_id),
+                tool_config=self.tool_config or MockToolConfig(),
+            )
+
+    class _FailingBenchmark(MockCubeBenchmark):
+        benchmark_metadata = BenchmarkMetadata(name="failing", version="0.1.0", description="test")
+        task_metadata = {"fail_task_0": TaskMetadata(id="fail_task_0")}
+        task_config_class = _FailingTaskConfig
+
+    return _FailingBenchmark()
+
+
+def _make_neverending_benchmark(max_steps: int) -> CubeBenchmark:
+    """Benchmark whose single task never sets done=True, triggering MAX_STEPS_REACHED."""
+
+    class _NeverDoneTask(MockCubeTask):
+        def step(self, actions):
+            return EnvironmentOutput(obs=Observation.from_text("still going"), reward=0.0, done=False)
+
+    class _NeverDoneTaskConfig(MockCubeTaskConfig):
+        def make(self, runtime_context=None, container_backend=None) -> _NeverDoneTask:
+            from cube.task import TaskMetadata
+
+            return _NeverDoneTask(
+                metadata=TaskMetadata(id=self.task_id),
+                tool_config=self.tool_config or MockToolConfig(),
+            )
+
+    class _NeverDoneBenchmark(MockCubeBenchmark):
+        benchmark_metadata = BenchmarkMetadata(name="neverending", version="0.1.0", description="test")
+        task_metadata = {"never_task_0": TaskMetadata(id="never_task_0")}
+        task_config_class = _NeverDoneTaskConfig
+
+    return _NeverDoneBenchmark()
 
 
 def _make_benchmark(n: int) -> CubeBenchmark:
@@ -359,11 +409,163 @@ class TestExperiment:
 class TestStatusBasedSelection:
     """Focused tests for the status-driven selection logic."""
 
-    def test_stale_sweep_marks_orphaned_running(self, tmp_dir, mock_agent_config):
-        """A RUNNING entry with a stale heartbeat is swept to STALE and becomes retriable."""
+    # ------------------------------------------------------------------
+    # Parametrized sweep: direct sweep_stale_statuses behaviour
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "initial_status,started_age,heartbeat_age,step_timeout,cancel_grace,orphan_threshold,expect_swept",
+        [
+            # RUNNING with stale heartbeat → swept
+            ("RUNNING", 3600, 3600, 1.0, 1.0, 10.0, True),
+            # RUNNING with fresh heartbeat → not swept
+            ("RUNNING", 0, 0, 60.0, 60.0, 3600.0, False),
+            # QUEUED older than orphan_threshold → swept
+            ("QUEUED", 7200, None, 1.0, 1.0, 10.0, True),
+            # QUEUED younger than orphan_threshold → not swept
+            ("QUEUED", 0, None, 60.0, 60.0, 3600.0, False),
+        ],
+        ids=["running-stale", "running-fresh", "queued-orphan", "queued-fresh"],
+    )
+    def test_sweep_stale_statuses(
+        self,
+        tmp_dir: "Path",
+        mock_agent_config: "MockAgentConfig",
+        initial_status: str,
+        started_age: float,
+        heartbeat_age: float | None,
+        step_timeout: float,
+        cancel_grace: float,
+        orphan_threshold: float,
+        expect_swept: bool,
+    ) -> None:
+        """sweep_stale_statuses marks stale in-flight entries STALE and leaves fresh ones alone."""
+        benchmark = _make_benchmark(1)
+        exp = Experiment(name="test_sweep", output_dir=tmp_dir, agent_config=mock_agent_config, benchmark=benchmark)
+        episodes = exp.get_episodes_to_run()
+        traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
+        storage = FileStorage(tmp_dir)
+        now = time.time()
+        storage.write_episode_status(
+            traj_id,
+            EpisodeStatus(
+                status=initial_status,
+                task_id=episodes[0].config.task_config.task_id,
+                episode_id=episodes[0].config.id,
+                started_at=now - started_age,
+                last_heartbeat_at=None if heartbeat_age is None else now - heartbeat_age,
+                current_step=0,
+            ),
+        )
+
+        swept = sweep_stale_statuses(
+            storage,
+            step_timeout_s=step_timeout,
+            cancel_grace_s=cancel_grace,
+            orphan_threshold_s=orphan_threshold,
+        )
+
+        if expect_swept:
+            assert swept == [traj_id]
+            assert storage.read_episode_status(traj_id).status == "STALE"
+        else:
+            assert swept == []
+            assert storage.read_episode_status(traj_id).status == initial_status
+
+    # ------------------------------------------------------------------
+    # Parametrized table: resume=True selection by status
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "status,extra_fields,expect_returned",
+        [
+            # retriable — resume must include
+            ("FAILED",    {},                     True),
+            ("CANCELLED", {},                     True),
+            ("STALE",     {},                     True),
+            # terminal non-retriable — resume must skip
+            ("COMPLETED",         {"reward": 1.0, "ended_at": 0}, False),
+            ("MAX_STEPS_REACHED", {"reward": 0.0, "ended_at": 0}, False),
+            # in-flight — resume must skip (not swept; fresh timestamps)
+            ("QUEUED",  {},                       False),
+            ("RUNNING", {"last_heartbeat_at": 0}, False),
+        ],
+        ids=["failed", "cancelled", "stale", "completed", "max-steps-reached", "queued", "running"],
+    )
+    def test_resume_selection_by_status(
+        self,
+        tmp_dir: "Path",
+        mock_agent_config: "MockAgentConfig",
+        status: str,
+        extra_fields: dict,
+        expect_returned: bool,
+    ) -> None:
+        """resume=True returns retriable statuses and skips terminal/in-flight ones."""
+        benchmark = _make_benchmark(1)
+        exp = Experiment(name="test_sel", output_dir=tmp_dir, agent_config=mock_agent_config, benchmark=benchmark)
+        episodes = exp.get_episodes_to_run()
+        traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
+        storage = FileStorage(tmp_dir)
+
+        now = time.time()
+        resolved = {k: (now if v == 0 else v) for k, v in extra_fields.items()}
+        storage.write_episode_status(
+            traj_id,
+            EpisodeStatus(
+                status=status,
+                task_id=episodes[0].config.task_config.task_id,
+                episode_id=episodes[0].config.id,
+                started_at=now,
+                retry_count=0,
+                **resolved,
+            ),
+        )
+
+        exp.resume = True
+        # Use generous timeouts so fresh QUEUED/RUNNING are not swept to STALE.
+        result = exp.get_episodes_to_run(step_timeout_s=3600.0, cancel_grace_s=3600.0, orphan_threshold_s=3600.0)
+
+        if expect_returned:
+            assert len(result) == 1 and result[0].config.id == episodes[0].config.id
+        else:
+            assert result == []
+
+    def test_sequential_pre_claims_all_episodes_as_queued_before_loop(self, tmp_dir, mock_agent_config):
+        """Sequential mode pre-claims all episodes as QUEUED before the loop starts.
+
+        All waiting episodes must have status.json=QUEUED from the start so a crash
+        mid-run leaves them distinguishable from episodes that were never submitted.
+        """
+        benchmark = _make_benchmark(3)
+        exp = Experiment(
+            name="test_seq_preclaim",
+            output_dir=tmp_dir,
+            agent_config=mock_agent_config,
+            benchmark=benchmark,
+        )
+        storage = FileStorage(tmp_dir)
+
+        run_sequentially(exp, debug_limit=1)
+
+        # All 3 episodes must have a status.json — not just the one that ran.
+        all_statuses = storage.list_episode_statuses()
+        assert len(all_statuses) == 3, (
+            f"Expected all 3 episodes pre-claimed, got {len(all_statuses)}: {list(all_statuses)}"
+        )
+
+        # The episode that ran should be COMPLETED.
+        completed = [tid for tid, s in all_statuses.items() if s.status == "COMPLETED"]
+        assert len(completed) == 1
+
+        # The two that didn't run should be QUEUED (pre-claimed but not started).
+        queued = [tid for tid, s in all_statuses.items() if s.status == "QUEUED"]
+        assert len(queued) == 2
+
+    def test_heartbeat_advances_current_step_and_timestamp(self, tmp_dir, mock_agent_config):
+        """RUNNING → RUNNING: each turn updates last_heartbeat_at and current_step without changing status."""
         benchmark = _make_benchmark(1)
         exp = Experiment(
-            name="test_stale_sweep",
+            name="test_heartbeat",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
             benchmark=benchmark,
@@ -371,7 +573,107 @@ class TestStatusBasedSelection:
         episodes = exp.get_episodes_to_run()
         traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
         storage = FileStorage(tmp_dir)
-        # Heartbeat 1 hour ago — older than step_timeout(1s) + cancel_grace(1s)
+
+        t0 = time.time() - 10
+        storage.write_episode_status(
+            traj_id,
+            EpisodeStatus(
+                status="RUNNING",
+                task_id=episodes[0].config.task_config.task_id,
+                episode_id=episodes[0].config.id,
+                started_at=t0,
+                last_heartbeat_at=t0,
+                current_step=0,
+                retry_count=0,
+            ),
+        )
+
+        # Simulate two heartbeat writes (what the loop does at the start of each turn).
+        for turn in range(1, 3):
+            s = storage.read_episode_status(traj_id)
+            s.last_heartbeat_at = time.time()
+            s.current_step = turn
+            storage.write_episode_status(traj_id, s)
+
+        final = storage.read_episode_status(traj_id)
+        assert final.status == "RUNNING"       # status unchanged
+        assert final.current_step == 2         # advanced through two turns
+        assert final.last_heartbeat_at > t0    # heartbeat is newer than start
+
+    def test_cancelled_at_max_retries_cap_is_terminal(self, tmp_dir, mock_agent_config):
+        """CANCELLED → terminal: retry_count >= max_retries excludes from retry selection."""
+        benchmark = _make_benchmark(1)
+        exp = Experiment(
+            name="test_cancelled_cap",
+            output_dir=tmp_dir,
+            agent_config=mock_agent_config,
+            benchmark=benchmark,
+            max_retries=2,
+        )
+        episodes = exp.get_episodes_to_run()
+        storage = FileStorage(tmp_dir)
+        traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
+
+        storage.write_episode_status(
+            traj_id,
+            EpisodeStatus(
+                status="CANCELLED",
+                task_id=episodes[0].config.task_config.task_id,
+                episode_id=episodes[0].config.id,
+                started_at=time.time(),
+                ended_at=time.time(),
+                error_type="StepTimeout",
+                error_message="Step 3 exceeded 1800s",
+                retry_count=2,  # == max_retries → capped
+            ),
+        )
+
+        exp.resume = True
+        assert exp.get_episodes_to_run() == []
+
+    def test_stale_at_max_retries_cap_is_terminal(self, tmp_dir, mock_agent_config):
+        """STALE → terminal: retry_count >= max_retries excludes from retry selection."""
+        benchmark = _make_benchmark(1)
+        exp = Experiment(
+            name="test_stale_cap",
+            output_dir=tmp_dir,
+            agent_config=mock_agent_config,
+            benchmark=benchmark,
+            max_retries=2,
+        )
+        episodes = exp.get_episodes_to_run()
+        storage = FileStorage(tmp_dir)
+        traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
+
+        storage.write_episode_status(
+            traj_id,
+            EpisodeStatus(
+                status="STALE",
+                task_id=episodes[0].config.task_config.task_id,
+                episode_id=episodes[0].config.id,
+                started_at=time.time(),
+                ended_at=time.time(),
+                error_type="WorkerDied",
+                retry_count=2,  # == max_retries → capped
+            ),
+        )
+
+        exp.resume = True
+        assert exp.get_episodes_to_run() == []
+
+    def test_resume_auto_sweeps_stale_running_and_returns_for_retry(self, tmp_dir, mock_agent_config) -> None:
+        """resume=True sweeps a stale RUNNING entry to STALE and returns it for retry in one call."""
+        benchmark = _make_benchmark(1)
+        exp = Experiment(
+            name="test_resume_sweep",
+            output_dir=tmp_dir,
+            agent_config=mock_agent_config,
+            benchmark=benchmark,
+        )
+        episodes = exp.get_episodes_to_run()
+        traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
+        storage = FileStorage(tmp_dir)
+
         storage.write_episode_status(
             traj_id,
             EpisodeStatus(
@@ -380,27 +682,25 @@ class TestStatusBasedSelection:
                 episode_id=episodes[0].config.id,
                 started_at=time.time() - 3600,
                 last_heartbeat_at=time.time() - 3600,
-                current_step=5,
+                current_step=3,
                 retry_count=0,
             ),
         )
 
-        swept = sweep_stale_statuses(storage, step_timeout_s=1.0, cancel_grace_s=1.0, orphan_threshold_s=10.0)
-        assert swept == [traj_id]
-        status = storage.read_episode_status(traj_id)
-        assert status is not None
-        assert status.status == "STALE"
-
         exp.resume = True
         retried = exp.get_episodes_to_run(step_timeout_s=1.0, cancel_grace_s=1.0, orphan_threshold_s=10.0)
+
+        # The sweep ran implicitly — status is now STALE.
+        assert storage.read_episode_status(traj_id).status == "STALE"
+        # And the episode was returned for retry.
         assert len(retried) == 1
         assert retried[0].config.id == episodes[0].config.id
 
-    def test_queued_orphan_swept_to_stale(self, tmp_dir, mock_agent_config):
-        """A QUEUED entry older than `orphan_threshold_s` is swept to STALE."""
+    def test_resume_auto_sweeps_orphaned_queued_and_returns_for_retry(self, tmp_dir, mock_agent_config) -> None:
+        """resume=True sweeps an orphaned QUEUED entry to STALE and returns it for retry in one call."""
         benchmark = _make_benchmark(1)
         exp = Experiment(
-            name="test_queued_orphan",
+            name="test_resume_sweep_queued",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
             benchmark=benchmark,
@@ -408,7 +708,7 @@ class TestStatusBasedSelection:
         episodes = exp.get_episodes_to_run()
         traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
         storage = FileStorage(tmp_dir)
-        # QUEUED with started_at way in the past — Ray never picked it up.
+
         storage.write_episode_status(
             traj_id,
             EpisodeStatus(
@@ -418,136 +718,162 @@ class TestStatusBasedSelection:
                 started_at=time.time() - 7200,
                 last_heartbeat_at=None,
                 current_step=0,
+                retry_count=0,
             ),
         )
-        swept = sweep_stale_statuses(storage, step_timeout_s=1.0, cancel_grace_s=1.0, orphan_threshold_s=10.0)
-        assert swept == [traj_id]
+
+        exp.resume = True
+        retried = exp.get_episodes_to_run(step_timeout_s=1.0, cancel_grace_s=1.0, orphan_threshold_s=10.0)
+
         assert storage.read_episode_status(traj_id).status == "STALE"
+        assert len(retried) == 1
+        assert retried[0].config.id == episodes[0].config.id
 
-    def test_queued_fresh_not_swept(self, tmp_dir, mock_agent_config):
-        """A QUEUED entry younger than `orphan_threshold_s` is left alone (still queued)."""
-        benchmark = _make_benchmark(1)
+    def test_worker_writes_failed_on_unhandled_exception(self, tmp_dir, mock_agent_config) -> None:
+        """RUNNING → FAILED: unhandled exception in step() causes the worker to write FAILED with error fields."""
+        benchmark = _make_failing_benchmark()
         exp = Experiment(
-            name="test_queued_fresh",
+            name="test_failed_status",
             output_dir=tmp_dir,
             agent_config=mock_agent_config,
             benchmark=benchmark,
         )
         episodes = exp.get_episodes_to_run()
-        traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
         storage = FileStorage(tmp_dir)
-        storage.write_episode_status(
-            traj_id,
-            EpisodeStatus(
-                status="QUEUED",
-                task_id=episodes[0].config.task_config.task_id,
-                episode_id=episodes[0].config.id,
-                started_at=time.time(),
-                last_heartbeat_at=None,
-                current_step=0,
-            ),
+
+        with pytest.raises(RuntimeError, match="injected step failure"):
+            episodes[0].run()
+
+        traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
+        status = storage.read_episode_status(traj_id)
+        assert status is not None
+        assert status.status == "FAILED"
+        assert status.error_type == "RuntimeError"
+        assert "injected step failure" in (status.error_message or "")
+        assert status.ended_at is not None
+
+    def test_worker_writes_max_steps_reached_when_loop_exhausted(self, tmp_dir, mock_agent_config) -> None:
+        """RUNNING → MAX_STEPS_REACHED: loop exhausts max_steps without done=True."""
+        max_steps = 2
+        benchmark = _make_neverending_benchmark(max_steps)
+        exp = Experiment(
+            name="test_max_steps_status",
+            output_dir=tmp_dir,
+            agent_config=mock_agent_config,
+            benchmark=benchmark,
+            max_steps=max_steps,
         )
-        swept = sweep_stale_statuses(storage, step_timeout_s=60.0, cancel_grace_s=60.0, orphan_threshold_s=3600.0)
-        assert swept == []
-        # In-flight (QUEUED) is never returned by resume.
+        episodes = exp.get_episodes_to_run()
+        storage = FileStorage(tmp_dir)
+
+        episodes[0].run()
+
+        traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
+        status = storage.read_episode_status(traj_id)
+        assert status is not None
+        assert status.status == "MAX_STEPS_REACHED"
+        assert status.ended_at is not None
+        # Not retriable — resume must skip it.
         exp.resume = True
         assert exp.get_episodes_to_run() == []
 
-    def test_stale_sweep_keeps_fresh_running(self, tmp_dir, mock_agent_config):
-        """A RUNNING entry with a fresh heartbeat is left alone."""
-        benchmark = _make_benchmark(1)
-        exp = Experiment(
-            name="test_fresh_running",
-            output_dir=tmp_dir,
-            agent_config=mock_agent_config,
-            benchmark=benchmark,
-        )
-        episodes = exp.get_episodes_to_run()
-        traj_id = f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}"
-        storage = FileStorage(tmp_dir)
-        storage.write_episode_status(
-            traj_id,
-            EpisodeStatus(
-                status="RUNNING",
-                task_id=episodes[0].config.task_config.task_id,
-                episode_id=episodes[0].config.id,
-                started_at=time.time(),
-                last_heartbeat_at=time.time(),
-                current_step=1,
-            ),
-        )
-        swept = sweep_stale_statuses(storage, step_timeout_s=60.0, cancel_grace_s=60.0, orphan_threshold_s=3600.0)
-        assert swept == []
-        # Fresh RUNNING is never returned, even with resume=True.
-        exp.resume = True
-        assert exp.get_episodes_to_run() == []
 
-    def test_resume_returns_unstarted_and_failed_skipping_completed(self, tmp_dir, mock_agent_config):
-        """resume=True returns missing-status + retriable failures, skipping COMPLETED."""
-        benchmark = _make_benchmark(3)
-        exp = Experiment(
-            name="test_resume_mixed",
-            output_dir=tmp_dir,
-            agent_config=mock_agent_config,
-            benchmark=benchmark,
-        )
-        episodes = exp.get_episodes_to_run()
-        storage = FileStorage(tmp_dir)
-        # Episode 0: COMPLETED — should NOT be returned
-        storage.write_episode_status(
-            f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}",
-            EpisodeStatus(
-                status="COMPLETED",
-                task_id=episodes[0].config.task_config.task_id,
-                episode_id=episodes[0].config.id,
-                started_at=time.time(),
-                ended_at=time.time(),
-                last_heartbeat_at=time.time(),
-                reward=1.0,
-            ),
-        )
-        # Episode 1: FAILED — SHOULD be returned (resume covers retriable failures)
-        storage.write_episode_status(
-            f"{episodes[1].config.task_config.task_id}_ep{episodes[1].config.id}",
-            EpisodeStatus(
-                status="FAILED",
-                task_id=episodes[1].config.task_config.task_id,
-                episode_id=episodes[1].config.id,
-                started_at=time.time(),
-            ),
-        )
-        # Episode 2: no status.json — SHOULD be returned (never started)
+class TestKillStaleWorkersRaceGuard:
+    """Unit tests for the _kill_stale_workers race guard.
 
-        exp.resume = True
-        resumed = exp.get_episodes_to_run()
-        ids = {ep.config.id for ep in resumed}
-        assert ids == {episodes[1].config.id, episodes[2].config.id}
+    The guard prevents the driver from stamping CANCELLED after the worker has
+    already written a terminal status (COMPLETED or FAILED) between the staleness
+    check and the ray.cancel call.
+    """
 
-    def test_resume_skips_max_steps_reached(self, tmp_dir, mock_agent_config):
-        """resume=True does NOT re-run MAX_STEPS_REACHED — it's a legitimate outcome."""
-        benchmark = _make_benchmark(2)
-        exp = Experiment(
-            name="test_max_steps_skip",
-            output_dir=tmp_dir,
-            agent_config=mock_agent_config,
-            benchmark=benchmark,
+    def _stale_running_status(self, task_id: str, episode_id: int) -> EpisodeStatus:
+        return EpisodeStatus(
+            status="RUNNING",
+            task_id=task_id,
+            episode_id=episode_id,
+            started_at=time.time() - 7200,
+            last_heartbeat_at=time.time() - 7200,  # ancient — triggers kill
+            current_step=5,
+            retry_count=0,
         )
-        episodes = exp.get_episodes_to_run()
+
+    def test_driver_does_not_clobber_completed_written_by_worker(self, tmp_dir) -> None:
+        """RUNNING (stale) → worker races to COMPLETED → driver skips CANCELLED."""
         storage = FileStorage(tmp_dir)
-        # Episode 0: MAX_STEPS_REACHED → skipped on resume
-        storage.write_episode_status(
-            f"{episodes[0].config.task_config.task_id}_ep{episodes[0].config.id}",
-            EpisodeStatus(
-                status="MAX_STEPS_REACHED",
-                task_id=episodes[0].config.task_config.task_id,
-                episode_id=episodes[0].config.id,
-                started_at=time.time(),
-                ended_at=time.time(),
-                last_heartbeat_at=time.time(),
-                reward=0.0,
-            ),
+        traj_id = "task_race_ep0"
+        task_id = "task_race"
+
+        stale_status = self._stale_running_status(task_id, 0)
+        completed_status = EpisodeStatus(
+            status="COMPLETED",
+            task_id=task_id,
+            episode_id=0,
+            started_at=time.time() - 7200,
+            ended_at=time.time(),
+            last_heartbeat_at=time.time(),
+            reward=1.0,
+            retry_count=0,
         )
-        # Episode 1: missing → included
-        exp.resume = True
-        resumed = exp.get_episodes_to_run()
-        assert {ep.config.id for ep in resumed} == {episodes[1].config.id}
+
+        fake_ref = MagicMock()
+        ref_to_traj_id = {fake_ref: traj_id}
+        results = ExpResult(exp_id="test", tasks_num=1)
+        episodes_in_progress = [fake_ref]
+
+        # First read: stale RUNNING. Second read (after ray.cancel): COMPLETED.
+        with patch("cube_harness.exp_runner.ray.cancel") as mock_cancel, patch.object(
+            storage, "read_episode_status", side_effect=[stale_status, completed_status]
+        ), patch.object(storage, "write_episode_status") as mock_write:
+            _kill_stale_workers(
+                episodes_in_progress,
+                ref_to_traj_id,
+                storage,
+                results,
+                step_timeout_s=1.0,
+                cancel_grace_s=1.0,
+            )
+
+        # ray.cancel was still called (driver didn't know worker had finished).
+        mock_cancel.assert_called_once_with(fake_ref, force=True)
+        # write_episode_status was NOT called — COMPLETED is preserved, not clobbered.
+        mock_write.assert_not_called()
+        # Ref removed from in-progress (driver moves on regardless).
+        assert fake_ref not in episodes_in_progress
+        # CANCELLED was NOT recorded as a failure.
+        assert traj_id not in results.failures
+
+    def test_driver_stamps_cancelled_when_still_running_after_cancel(self, tmp_dir) -> None:
+        """RUNNING (stale) → worker does not race → driver writes CANCELLED."""
+        storage = FileStorage(tmp_dir)
+        traj_id = "task_norace_ep0"
+        task_id = "task_norace"
+
+        stale_status = self._stale_running_status(task_id, 0)
+
+        fake_ref = MagicMock()
+        ref_to_traj_id = {fake_ref: traj_id}
+        results = ExpResult(exp_id="test", tasks_num=1)
+        episodes_in_progress = [fake_ref]
+
+        # Both reads return RUNNING — worker never wrote a terminal status.
+        with patch("cube_harness.exp_runner.ray.cancel"), patch.object(
+            storage, "read_episode_status", side_effect=[stale_status, stale_status]
+        ), patch.object(storage, "write_episode_status") as mock_write:
+            _kill_stale_workers(
+                episodes_in_progress,
+                ref_to_traj_id,
+                storage,
+                results,
+                step_timeout_s=1.0,
+                cancel_grace_s=1.0,
+            )
+
+        # CANCELLED was written.
+        assert mock_write.call_count == 1
+        written: EpisodeStatus = mock_write.call_args[0][1]
+        assert written.status == "CANCELLED"
+        assert written.error_type == "StepTimeout"
+        assert "Step 5 exceeded" in written.error_message
+        # Recorded as a failure.
+        assert traj_id in results.failures
+        assert fake_ref not in episodes_in_progress

@@ -426,16 +426,20 @@ def _run_sequentially_impl(
 ) -> ExpResult:
     """Run a single sequential round in-process, returning trajectories and failures for this round."""
     exp.save_config()
+    storage = FileStorage(exp.output_dir)
     exp.benchmark.setup()
     try:
-        episodes = exp.get_episodes_to_run(
+        all_episodes = exp.get_episodes_to_run(
             step_timeout_s=step_timeout_s,
             cancel_grace_s=cancel_grace_s,
             orphan_threshold_s=orphan_threshold_s,
         )
+        for episode in all_episodes:
+            _pre_claim(storage, episode)
         if debug_limit is not None:
             logger.info(f"Running only first {debug_limit} episodes for debugging")
-            episodes = episodes[:debug_limit]
+        episodes = all_episodes[:debug_limit] if debug_limit is not None else all_episodes
+
         results = ExpResult(
             tasks_num=len(episodes),
             config=exp.config,
