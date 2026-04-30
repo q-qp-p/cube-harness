@@ -34,7 +34,6 @@ load_dotenv(_project_env if _project_env.exists() else Path.home() / ".env", ove
 
 from hints import load_hints  # noqa: E402
 
-from cube_harness import make_experiment_output_dir  # noqa: E402
 from cube_harness.agents.genny import GennyConfig  # noqa: E402
 from cube_harness.exp_runner import run_sequentially, run_with_ray  # noqa: E402
 from cube_harness.experiment import Experiment  # noqa: E402
