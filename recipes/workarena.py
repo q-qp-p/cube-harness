@@ -91,13 +91,13 @@ def main(debug: bool, agent: str, level: int) -> None:
 
     # Configure WorkArena benchmark: filter to the requested level via `.named_subset`,
     # then start the runtime Benchmark via `.make()`
-    benchmark = WorkArenaBenchmarkConfig(tool_config=tool_config, n_seeds_l1=1).named_subset(f"l{level}").make()
+    benchmark_config = WorkArenaBenchmarkConfig(tool_config=tool_config, n_seeds_l1=1).named_subset(f"l{level}")
 
     exp = Experiment(
         name=f"workarena_{agent}",
         output_dir=output_dir,
         agent_config=agent_config,
-        benchmark=benchmark,
+        benchmark_config=benchmark_config,
         max_steps=15,
     )
 
