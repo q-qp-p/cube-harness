@@ -55,6 +55,8 @@ _TASK_ACTIONS: dict[str, list[Action]] = {
     ],
 }
 
+DEBUG_TASK_IDS: list[str] = list(_TASK_ACTIONS.keys())
+
 
 class DebugAgent:
     """Deterministic agent that replays a fixed action sequence."""

@@ -30,6 +30,8 @@ _TASK_ACTIONS: dict[str, list[Action]] = {
     "astropy__astropy-12907": [_APPLY_PATCH, _FINAL],
 }
 
+DEBUG_TASK_IDS: list[str] = list(_TASK_ACTIONS.keys())
+
 
 class DebugAgent:
     """Deterministic agent that replays a fixed action sequence."""
