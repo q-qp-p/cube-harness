@@ -142,7 +142,7 @@ class WebArenaVerifiedBenchmark(Benchmark["WebArenaVerifiedBenchmarkConfig"]):
             self._handle = None
 
 
-class WebArenaVerifiedBenchmarkConfig(BenchmarkConfig):
+class WebArenaVerifiedBenchmarkConfig(BenchmarkConfig[WebArenaVerifiedTaskMetadata]):
     """WebArena Verified — 812 verified web automation tasks across 6 platforms.
 
     Exactly one of two setup modes must be configured before calling ``make()``:
@@ -233,9 +233,6 @@ class WebArenaVerifiedBenchmarkConfig(BenchmarkConfig):
     def get_task_configs(self) -> Generator[WebArenaVerifiedTaskConfig, None, None]:
         """Yield TaskConfigs with wav_config forwarded from benchmark settings."""
         for tm in self.tasks().values():
-            if not isinstance(tm, WebArenaVerifiedTaskMetadata):
-                raise ValueError(f"tasks() expected WebArenaVerifiedTaskMetadata, got {type(tm)}")
-
             yield WebArenaVerifiedTaskConfig(
                 metadata=tm,
                 tool_config=self.tool_config,
