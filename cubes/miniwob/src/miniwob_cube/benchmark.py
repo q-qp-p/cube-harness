@@ -85,7 +85,7 @@ class MiniWobBenchmark(Benchmark["MiniWobBenchmarkConfig"]):
             self._stderr_file = None
 
 
-class MiniWobBenchmarkConfig(BenchmarkConfig[MiniWobTaskMetadata]):
+class MiniWobBenchmarkConfig(BenchmarkConfig):
     benchmark_metadata: ClassVar[BenchmarkMetadata] = BenchmarkMetadata(
         name="miniwob-cube",
         version="1.0.0",
@@ -109,6 +109,9 @@ class MiniWobBenchmarkConfig(BenchmarkConfig[MiniWobTaskMetadata]):
 
     def get_task_configs(self) -> Generator[MiniWobTaskConfig, None, None]:
         for tm in self.tasks().values():
+            if not isinstance(tm, MiniWobTaskMetadata):
+                raise ValueError(f"tasks() expected MiniWobTaskMetadata, got {type(tm)}")
+
             yield MiniWobTaskConfig(
                 metadata=tm,
                 tool_config=self.tool_config,

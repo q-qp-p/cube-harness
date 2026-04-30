@@ -29,13 +29,13 @@ def main(debug: bool) -> None:
     agent_config = ReactAgentConfig(llm_config=llm_config)
 
     tool_config = PlaywrightConfig(use_screenshot=True, headless=True)
-    benchmark = MiniWobBenchmarkConfig(tool_config=tool_config).make()
+    benchmark_config = MiniWobBenchmarkConfig(tool_config=tool_config)
 
     exp = Experiment(
         name="miniwob",
         output_dir=output_dir,
         agent_config=agent_config,
-        benchmark=benchmark,
+        benchmark_config=benchmark_config,
         max_steps=10,
     )
 
