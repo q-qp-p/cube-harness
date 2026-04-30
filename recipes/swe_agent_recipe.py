@@ -90,19 +90,32 @@ def _make_benchmark(
 ) -> object:
     """Instantiate and filter the requested benchmark. Imports are lazy so only
     the installed cube is required."""
+    if debug:
+        if benchmark_name == "swebench-verified":
+            from swebench_verified_cube.debug import get_debug_benchmark
+        elif benchmark_name == "swebench-live":
+            from swebench_live_cube.debug import get_debug_benchmark
+        elif benchmark_name == "terminalbench":
+            from terminalbench_cube.debug import get_debug_benchmark
+        else:
+            raise ValueError(
+                f"Unknown benchmark: {benchmark_name!r}. Choose: swebench-verified, swebench-live, terminalbench"
+            )
+        bench = get_debug_benchmark(oracle_mode=False)
+        if task_ids:
+            bench = bench.subset_from_list(task_ids)
+        return bench
+
     if benchmark_name == "swebench-verified":
         from swebench_verified_cube.benchmark import SWEBenchVerifiedBenchmark
-        from swebench_verified_cube.debug import DEBUG_TASK_IDS as default_debug
 
         bench = SWEBenchVerifiedBenchmark()
     elif benchmark_name == "swebench-live":
         from swebench_live_cube.benchmark import SWEBenchLiveBenchmark
-        from swebench_live_cube.debug import DEBUG_TASK_IDS as default_debug
 
         bench = SWEBenchLiveBenchmark()
     elif benchmark_name == "terminalbench":
         from terminalbench_cube import TerminalBenchBenchmark
-        from terminalbench_cube.debug import DEBUG_TASK_IDS as default_debug
 
         TerminalBenchBenchmark.install()
         bench = TerminalBenchBenchmark()
@@ -113,9 +126,7 @@ def _make_benchmark(
 
     if subset:
         bench = bench.named_subset(subset)
-    if debug:
-        bench = bench.subset_from_list(task_ids or default_debug)
-    elif task_ids:
+    if task_ids:
         bench = bench.subset_from_list(task_ids)
     return bench
 

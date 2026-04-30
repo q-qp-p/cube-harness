@@ -30,8 +30,6 @@ _TASK_ACTIONS: dict[str, list[Action]] = {
     "dynaconf__dynaconf-1241": [_APPLY_PATCH, _FINAL],
 }
 
-DEBUG_TASK_IDS: list[str] = list(_TASK_ACTIONS.keys())
-
 
 class DebugAgent:
     """Deterministic agent that replays a fixed action sequence."""
@@ -54,17 +52,21 @@ class DebugAgent:
         return self.get_action(obs)
 
 
-def get_debug_benchmark(infra: InfraConfig | None = None) -> Benchmark:
+def get_debug_benchmark(infra: InfraConfig | None = None, *, oracle_mode: bool = True) -> Benchmark:
     """Return a SWEBenchLiveBenchmark scoped to the debug tasks.
 
     Args:
         infra: InfraConfig that provisions and launches per-task containers.
                Defaults to ``LocalInfraConfig()``. Override to target Daytona,
                Toolkit, etc.
+        oracle_mode: If True (default), the gold patch is written to
+                     /tmp/gold_patch.diff on reset — used by the deterministic
+                     DebugAgent for ``cube test``. Pass False for LLM recipe
+                     debug runs where the agent should solve the task itself.
     """
     bench = SWEBenchLiveBenchmark(
         infra=infra or LocalInfraConfig(),
-        oracle_mode=True,
+        oracle_mode=oracle_mode,
     )
     bench.install()
     bench.setup()
