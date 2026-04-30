@@ -159,7 +159,6 @@ def run(
         task_hints=task_hints,
     )
 
-    tag = "hints" if use_hints else None
     if retry_dir is not None:
         output_dir = retry_dir
         resume = True
