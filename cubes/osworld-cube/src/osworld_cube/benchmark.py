@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 
 # Pinned OSWorld commit for reproducibility
-OSWORLD_COMMIT = "e695a10"
+OSWORLD_COMMIT = "cb834f7"
 
 
 # ---------------------------------------------------------------------------
