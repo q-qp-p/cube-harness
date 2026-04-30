@@ -47,6 +47,7 @@ build-backend = "uv_build"
 [tool.uv]
 constraint-dependencies = ["pyasn1>=0.6.2", "cryptography>=46.0.5", "protobuf>=6.33.5"]
 
+
 [tool.ruff]
 fix = true
 line-length = 120
@@ -60,6 +61,9 @@ line-ending = "auto"
 
 [tool.ruff.lint]
 extend-select = ["I"] # sort imports
+
+[tool.ruff.lint.per-file-ignores]
+"meta_agent/recipes/*.py" = ["E402"]
 
 [project.scripts]
 ch-mcp-server = "cube_harness.mcp.server:main"
