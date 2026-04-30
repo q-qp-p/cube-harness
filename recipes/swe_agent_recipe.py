@@ -112,9 +112,9 @@ def _make_benchmark(
 
         bench = SWEBenchVerifiedBenchmarkConfig()
     elif benchmark_name == "swebench-live":
-        from swebench_live_cube.benchmark import SWEBenchLiveBenchmark
+        from swebench_live_cube.benchmark import SWEBenchLiveBenchmarkConfig
 
-        bench = SWEBenchLiveBenchmark()
+        bench = SWEBenchLiveBenchmarkConfig()
     elif benchmark_name == "terminalbench":
         from terminalbench_cube import TerminalBenchBenchmark
 
