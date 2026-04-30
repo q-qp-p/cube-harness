@@ -7,7 +7,7 @@ Usage:
     .venv/bin/python recipes/swe_agent_recipe.py terminalbench gpt-5.4       # terminal-bench
 
 Options:
-    --debug              2 tasks, sequential (swebench) or 1 task (terminalbench)
+    --debug              Cube's canonical debug tasks, sequential
     --hints              Inject task hints (swebench-verified only)
     --tasks t1,t2        Run specific task IDs
     --subset NAME        Named subset: lite/verified/full (swebench-live), easy (terminalbench)
@@ -21,32 +21,18 @@ Each cube must be installed in the active venv:
 """
 
 import logging
-import os
-import re
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-# meta_agent/ is not a Python package — add it to sys.path so we can import swebench_hints.
+# meta_agent/ is not a Python package — add it to sys.path so we can import hints.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "meta_agent"))
 
-# Normalise DOCKER_HOST before load_dotenv — python-dotenv doesn't expand $(...) shell
-# expressions, so override=True would clobber the already-expanded value from the shell.
-_docker_host = os.environ.get("DOCKER_HOST", "")
-if _docker_host.startswith("http+unix://"):
-    _docker_host = re.sub(r"^http\+unix://", "unix://", _docker_host)
-if _docker_host:
-    os.environ["DOCKER_HOST"] = _docker_host
+from cube_harness import make_experiment_output_dir, setup_env  # noqa: E402
 
-_project_env = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(_project_env if _project_env.exists() else Path.home() / ".env", override=True)
+setup_env()
 
-# Re-apply after load_dotenv(override=True) to avoid clobbering with unexpanded expression.
-if _docker_host:
-    os.environ["DOCKER_HOST"] = _docker_host
+from hints import load_hints  # noqa: E402
 
-from cube_harness import make_experiment_output_dir  # noqa: E402
 from cube_harness.agents.genny import GennyConfig  # noqa: E402
 from cube_harness.exp_runner import run_sequentially, run_with_ray  # noqa: E402
 from cube_harness.experiment import Experiment  # noqa: E402
@@ -85,9 +71,6 @@ Only modify source code files to fix the bug.
 
 IMPORTANT: Every response must include a tool call — use `final_step` when done."""
 
-# Default tasks for debug runs (swebench-verified).
-DEBUG_TASKS = ["psf__requests-1142", "pallets__flask-5014"]
-
 MODEL_CONFIGS: dict[str, LLMConfig] = {
     "gpt-5.4-mini": LLMConfig(model_name="azure/gpt-5.4-mini"),
     "gpt-5.4": LLMConfig(model_name="azure/gpt-5.4"),
@@ -109,22 +92,24 @@ def _make_benchmark(
     the installed cube is required."""
     if benchmark_name == "swebench-verified":
         from swebench_verified_cube.benchmark import SWEBenchVerifiedBenchmark
+        from swebench_verified_cube.debug import DEBUG_TASK_IDS as default_debug
 
         bench = SWEBenchVerifiedBenchmark()
-        default_debug = DEBUG_TASKS
     elif benchmark_name == "swebench-live":
         from swebench_live_cube.benchmark import SWEBenchLiveBenchmark
+        from swebench_live_cube.debug import DEBUG_TASK_IDS as default_debug
 
         bench = SWEBenchLiveBenchmark()
-        default_debug = list(bench.task_metadata.keys())[:2]
     elif benchmark_name == "terminalbench":
         from terminalbench_cube import TerminalBenchBenchmark
+        from terminalbench_cube.debug import DEBUG_TASK_IDS as default_debug
 
         TerminalBenchBenchmark.install()
         bench = TerminalBenchBenchmark()
-        default_debug = list(bench.task_metadata.keys())[:1]
     else:
-        raise ValueError(f"Unknown benchmark: {benchmark_name!r}. Choose: swebench-verified, swebench-live, terminalbench")
+        raise ValueError(
+            f"Unknown benchmark: {benchmark_name!r}. Choose: swebench-verified, swebench-live, terminalbench"
+        )
 
     if subset:
         bench = bench.named_subset(subset)
@@ -153,11 +138,7 @@ def run(
 ) -> None:
     llm_config = MODEL_CONFIGS[model_key]
 
-    task_hints: dict[str, str] = {}
-    if use_hints and benchmark_name == "swebench-verified":
-        from swebench_hints import SWEBENCH_TASK_HINTS
-
-        task_hints = SWEBENCH_TASK_HINTS
+    task_hints = load_hints(benchmark_name) if use_hints else {}
 
     agent_config = GennyConfig(
         llm_config=llm_config,
@@ -186,7 +167,9 @@ def run(
         resume=resume,
     )
 
-    label = f"RETRY {retry_dir}" if retry_dir else (f"hints={use_hints}" if benchmark_name == "swebench-verified" else "")
+    label = (
+        f"RETRY {retry_dir}" if retry_dir else (f"hints={use_hints}" if benchmark_name == "swebench-verified" else "")
+    )
     print(f"\n=== {benchmark_name} | {model_key} | {label or 'no hints'} ===")
 
     if debug:
@@ -210,8 +193,8 @@ if __name__ == "__main__":
         choices=["swebench-verified", "swebench-live", "terminalbench"],
     )
     parser.add_argument("model", nargs="?", default="gpt-5.4-mini", choices=list(MODEL_CONFIGS))
-    parser.add_argument("--debug", action="store_true", help="Run 1-2 tasks sequentially")
-    parser.add_argument("--hints", action="store_true", help="Inject task hints (swebench-verified only)")
+    parser.add_argument("--debug", action="store_true", help="Run cube debug tasks sequentially")
+    parser.add_argument("--hints", action="store_true", help="Inject task hints")
     parser.add_argument("--tasks", default=None, help="Comma-separated task IDs")
     parser.add_argument("--subset", default=None, help="Named subset (e.g. lite, easy)")
     parser.add_argument("--n-parallel", type=int, default=5, help="Ray workers (default: 5)")
