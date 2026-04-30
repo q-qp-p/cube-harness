@@ -9,7 +9,7 @@ dependencies = [
 ]
 
 [project.entry-points."cube.benchmarks"]
-swebench-verified-cube = "swebench_verified_cube.benchmark:SWEBenchVerifiedBenchmark"
+swebench-verified-cube = "swebench_verified_cube.benchmark:SWEBenchVerifiedBenchmarkConfig"
 
 [build-system]
 requires = ["uv_build>=0.8,<0.9"]
@@ -22,6 +22,10 @@ include = ["src/swebench_verified_cube/task_metadata.json"]
 dev = [
     "pytest>=9.0",
 ]
+
+[tool.uv.sources]
+# TODO: drop once cube-standard 0.1.0rc7 ships to PyPI
+cube-standard = { git = "https://github.com/The-AI-Alliance/cube-standard", branch = "nico_fix" }
 
 [tool.ruff]
 fix = true

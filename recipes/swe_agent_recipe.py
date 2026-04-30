@@ -108,9 +108,9 @@ def _make_benchmark(
         return bench
 
     if benchmark_name == "swebench-verified":
-        from swebench_verified_cube.benchmark import SWEBenchVerifiedBenchmark
+        from swebench_verified_cube.benchmark import SWEBenchVerifiedBenchmarkConfig
 
-        bench = SWEBenchVerifiedBenchmark()
+        bench = SWEBenchVerifiedBenchmarkConfig()
     elif benchmark_name == "swebench-live":
         from swebench_live_cube.benchmark import SWEBenchLiveBenchmark
 
@@ -173,7 +173,7 @@ def run(
         name=f"genny-{benchmark_name}",
         output_dir=output_dir,
         agent_config=agent_config,
-        benchmark=benchmark,
+        benchmark_config=benchmark,
         max_steps=30,
         resume=resume,
     )
