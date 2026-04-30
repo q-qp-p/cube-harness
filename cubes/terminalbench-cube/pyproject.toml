@@ -9,7 +9,7 @@ dependencies = [
 ]
 
 [project.entry-points."cube.benchmarks"]
-terminalbench-cube = "terminalbench_cube.benchmark:TerminalBenchBenchmark"
+terminalbench-cube = "terminalbench_cube.benchmark:TerminalBenchBenchmarkConfig"
 
 [build-system]
 requires = ["uv_build>=0.8,<0.9"]
@@ -27,3 +27,7 @@ dev = [
 fix = true
 line-length = 120
 indent-width = 4
+
+[tool.uv.sources]
+# TODO: drop once cube-standard 0.1.0rc7 ships to PyPI
+cube-standard = { git = "https://github.com/The-AI-Alliance/cube-standard", branch = "nico_fix" }

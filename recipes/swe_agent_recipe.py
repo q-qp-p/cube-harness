@@ -116,10 +116,9 @@ def _make_benchmark(
 
         bench = SWEBenchLiveBenchmarkConfig()
     elif benchmark_name == "terminalbench":
-        from terminalbench_cube import TerminalBenchBenchmark
+        from terminalbench_cube.benchmark import TerminalBenchBenchmarkConfig
 
-        TerminalBenchBenchmark.install()
-        bench = TerminalBenchBenchmark()
+        bench = TerminalBenchBenchmarkConfig()
     else:
         raise ValueError(
             f"Unknown benchmark: {benchmark_name!r}. Choose: swebench-verified, swebench-live, terminalbench"
