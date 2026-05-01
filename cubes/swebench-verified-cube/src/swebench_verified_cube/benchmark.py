@@ -31,8 +31,12 @@ def _build_execution_info(row: dict[str, Any]) -> dict[str, Any]:
         "hints_text": row.get("hints_text", ""),
         "patch": row["patch"],
         "test_patch": row["test_patch"],
-        "fail_to_pass": json.loads(row["FAIL_TO_PASS"]) if isinstance(row["FAIL_TO_PASS"], str) else row["FAIL_TO_PASS"],
-        "pass_to_pass": json.loads(row["PASS_TO_PASS"]) if isinstance(row["PASS_TO_PASS"], str) else row["PASS_TO_PASS"],
+        "fail_to_pass": json.loads(row["FAIL_TO_PASS"])
+        if isinstance(row["FAIL_TO_PASS"], str)
+        else row["FAIL_TO_PASS"],
+        "pass_to_pass": json.loads(row["PASS_TO_PASS"])
+        if isinstance(row["PASS_TO_PASS"], str)
+        else row["PASS_TO_PASS"],
         "eval_timeout": 1800,
     }
 

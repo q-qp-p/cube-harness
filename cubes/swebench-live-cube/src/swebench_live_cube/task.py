@@ -279,9 +279,7 @@ class SWEBenchLiveTaskConfig(TaskConfig[SWEBenchLiveTaskMetadata]):
                 )
 
         type(self).verify_installed()
-        execution_info = SWEBenchLiveExecutionInfo.model_validate(
-            type(self).load_task_execution_info(self.task_id)
-        )
+        execution_info = SWEBenchLiveExecutionInfo.model_validate(type(self).load_task_execution_info(self.task_id))
 
         return SWEBenchLiveTask(
             metadata=self.metadata,

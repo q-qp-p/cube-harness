@@ -13,7 +13,7 @@ import tempfile
 import tomllib
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from cube import LocalInfraConfig
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
@@ -66,6 +66,7 @@ class TerminalBenchBenchmark(Benchmark["TerminalBenchBenchmarkConfig"]):
 
     def close(self) -> None:
         logger.info("Terminal-Bench benchmark closed")
+
 
 class TerminalBenchBenchmarkConfig(BenchmarkConfig[TerminalBenchTaskMetadata]):
     """Terminal-Bench 2 — real-world terminal tasks with pytest-based validation."""
