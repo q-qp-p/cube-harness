@@ -16,6 +16,7 @@ Usage
   uv run python tests/xray_screenshot_review.py --mode all
   uv run python tests/xray_screenshot_review.py --mode episode --headed
 """
+
 from __future__ import annotations
 
 import argparse
@@ -45,13 +46,19 @@ OUT_DIR = Path("/tmp/xray_screenshots")
 # Server lifecycle
 # ---------------------------------------------------------------------------
 
+
 @contextmanager
 def xray_server(results_dir: Path) -> Generator[str, None, None]:
     port = free_port()
     proc = subprocess.Popen(
-        ["uv", "run", "python", "-c",
-         f"from pathlib import Path; from cube_harness.analyze.xray import run_xray; "
-         f"run_xray(Path('{results_dir}'), port={port})"],
+        [
+            "uv",
+            "run",
+            "python",
+            "-c",
+            f"from pathlib import Path; from cube_harness.analyze.xray import run_xray; "
+            f"run_xray(Path('{results_dir}'), port={port})",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -68,6 +75,7 @@ def xray_server(results_dir: Path) -> Generator[str, None, None]:
 # Page navigation helpers
 # ---------------------------------------------------------------------------
 
+
 def load_experiment(page: Page, url: str) -> None:
     """Navigate to xray, open the Experiments tab, and select the experiment."""
     page.goto(url)
@@ -77,8 +85,7 @@ def load_experiment(page: Page, url: str) -> None:
     page.wait_for_selector("#exp_table tbody tr td", timeout=20_000)
     page.locator("#exp_table td[data-row='0'][data-col='0']").click()
     page.wait_for_function(
-        "() => [...document.querySelectorAll('button[role=tab]')]"
-        ".some(b => /Agents \\(\\d+\\)/.test(b.textContent))",
+        "() => [...document.querySelectorAll('button[role=tab]')].some(b => /Agents \\(\\d+\\)/.test(b.textContent))",
         timeout=20_000,
     )
     page.wait_for_timeout(600)
@@ -97,8 +104,15 @@ def click_row(locator, timeout: int = 5_000) -> None:
 
 
 def click_traj(page: Page, traj_id: str) -> None:
-    row = page.locator("#traj_table tr").filter(has_text=re.compile(rf"\b{traj_id}\b")).first
-    click_row(row)
+    """Click a trajectory row. traj_id format: {task_id}_ep{N}.
+
+    When a seed column is present the row is identified by task_id + seed value;
+    otherwise task_id alone is used (assumes unique task per table, as in SCENARIOS).
+    """
+    m = re.match(r"^(.+)_ep(\d+)$", traj_id)
+    task_id, ep = (m.group(1), m.group(2)) if m else (traj_id, None)
+    rows = page.locator("#traj_table tr").filter(has_text=re.compile(rf"\b{re.escape(task_id)}\b"))
+    click_row(rows.first)
     page.wait_for_timeout(400)
 
 
@@ -113,6 +127,7 @@ def shot(page: Page, name: str) -> Path:
 # ---------------------------------------------------------------------------
 # Modes
 # ---------------------------------------------------------------------------
+
 
 def run_status(page: Page, url: str) -> None:
     """Agents → Trajectories: all status symbols + retry badge."""
@@ -184,11 +199,14 @@ MODES = {
 def main() -> None:
     parser = argparse.ArgumentParser(description="XRay visual review — generates screenshots for agent analysis.")
     parser.add_argument(
-        "--mode", choices=[*MODES, "all"], default="all",
+        "--mode",
+        choices=[*MODES, "all"],
+        default="all",
         help="Which UI path to screenshot (default: all).",
     )
     parser.add_argument(
-        "--headed", action="store_true",
+        "--headed",
+        action="store_true",
         help="Run browser in headed (visible) mode instead of headless.",
     )
     args = parser.parse_args()

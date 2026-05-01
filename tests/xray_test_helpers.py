@@ -1,4 +1,5 @@
 """Shared helpers for xray tests and screenshot tools."""
+
 from __future__ import annotations
 
 import socket
@@ -16,27 +17,76 @@ from cube_harness.storage import FileStorage
 
 # Base scenarios — stable, used by pytest assertions.
 SCENARIOS: list[dict] = [
-    {"traj_id": "task_1_ep0", "task_id": "task_1", "agent_name": "agent_a",
-     "status": "COMPLETED", "reward": 1.0, "retry_count": 0},
-    {"traj_id": "task_1_ep1", "task_id": "task_1", "agent_name": "agent_a",
-     "status": "COMPLETED", "reward": 0.0, "retry_count": 0},
-    {"traj_id": "task_2_ep0", "task_id": "task_2", "agent_name": "agent_a",
-     "status": "MAX_STEPS_REACHED", "reward": 0.0, "retry_count": 1},
-    {"traj_id": "task_3_ep0", "task_id": "task_3", "agent_name": "agent_a",
-     "status": "FAILED", "reward": 0.0, "retry_count": 0,
-     "error_type": "RuntimeError", "error_message": "Environment crashed unexpectedly"},
-    {"traj_id": "task_4_ep0", "task_id": "task_4", "agent_name": "agent_a",
-     "status": "STALE", "reward": 0.0, "retry_count": 0},
+    {
+        "traj_id": "task_1_ep0",
+        "task_id": "task_1",
+        "agent_name": "agent_a",
+        "status": "COMPLETED",
+        "reward": 1.0,
+        "retry_count": 0,
+    },
+    {
+        "traj_id": "task_1_ep1",
+        "task_id": "task_1",
+        "agent_name": "agent_a",
+        "status": "COMPLETED",
+        "reward": 0.0,
+        "retry_count": 0,
+    },
+    {
+        "traj_id": "task_2_ep0",
+        "task_id": "task_2",
+        "agent_name": "agent_a",
+        "status": "MAX_STEPS_REACHED",
+        "reward": 0.0,
+        "retry_count": 1,
+    },
+    {
+        "traj_id": "task_3_ep0",
+        "task_id": "task_3",
+        "agent_name": "agent_a",
+        "status": "FAILED",
+        "reward": 0.0,
+        "retry_count": 0,
+        "error_type": "RuntimeError",
+        "error_message": "Environment crashed unexpectedly",
+    },
+    {
+        "traj_id": "task_4_ep0",
+        "task_id": "task_4",
+        "agent_name": "agent_a",
+        "status": "STALE",
+        "reward": 0.0,
+        "retry_count": 0,
+    },
 ]
 
 # Extended scenarios — richer error info, extra in-flight tasks; for visual review.
 EXTENDED_SCENARIOS: list[dict] = SCENARIOS + [
-    {"traj_id": "task_5_ep0", "task_id": "task_5", "agent_name": "agent_a",
-     "status": "RUNNING", "reward": 0.0, "retry_count": 0},
-    {"traj_id": "task_6_ep0", "task_id": "task_6", "agent_name": "agent_a",
-     "status": "QUEUED", "reward": 0.0, "retry_count": 0},
-    {"traj_id": "task_7_ep0", "task_id": "task_7", "agent_name": "agent_a",
-     "status": "CANCELLED", "reward": 0.0, "retry_count": 0},
+    {
+        "traj_id": "task_5_ep0",
+        "task_id": "task_5",
+        "agent_name": "agent_a",
+        "status": "RUNNING",
+        "reward": 0.0,
+        "retry_count": 0,
+    },
+    {
+        "traj_id": "task_6_ep0",
+        "task_id": "task_6",
+        "agent_name": "agent_a",
+        "status": "QUEUED",
+        "reward": 0.0,
+        "retry_count": 0,
+    },
+    {
+        "traj_id": "task_7_ep0",
+        "task_id": "task_7",
+        "agent_name": "agent_a",
+        "status": "CANCELLED",
+        "reward": 0.0,
+        "retry_count": 0,
+    },
 ]
 
 

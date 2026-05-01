@@ -18,13 +18,11 @@ from __future__ import annotations
 
 import re
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
 
 from cube_harness.analyze import xray_utils
-from cube_harness.core import Trajectory
 from cube_harness.storage import FileStorage
 from tests.xray_test_helpers import SCENARIOS as _SCENARIOS
 from tests.xray_test_helpers import build_experiment as _build_experiment
@@ -58,9 +56,14 @@ def xray_server(exp_dir: Path):
     """Launch xray as a subprocess and return the base URL."""
     port = _free_port()
     proc = subprocess.Popen(
-        ["uv", "run", "python", "-c",
-         f"from pathlib import Path; from cube_harness.analyze.xray import run_xray; "
-         f"run_xray(Path('{exp_dir}'), port={port})"],
+        [
+            "uv",
+            "run",
+            "python",
+            "-c",
+            f"from pathlib import Path; from cube_harness.analyze.xray import run_xray; "
+            f"run_xray(Path('{exp_dir}'), port={port})",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -71,8 +74,7 @@ def xray_server(exp_dir: Path):
         out, err = proc.stdout.read(), proc.stderr.read()
         proc.terminate()
         raise TimeoutError(
-            f"XRay server did not start at {url} within 90s\n"
-            f"stdout: {out.decode()[:500]}\nstderr: {err.decode()[:500]}"
+            f"XRay server did not start at {url} within 90s\nstdout: {out.decode()[:500]}\nstderr: {err.decode()[:500]}"
         )
     yield url
     proc.terminate()
@@ -176,9 +178,13 @@ class TestXRayStatusUI:
         )
 
     def _click_traj_row_by_id(self, page, traj_id: str) -> None:
-        """Click the trajectory row whose traj_id cell contains traj_id."""
-        row = page.locator("#traj_table tr").filter(has_text=re.compile(rf"\b{traj_id}\b")).first
-        row.click()
+        """Click the trajectory row matching traj_id (format: {task_id}_ep{N})."""
+        m = re.match(r"^(.+)_ep(\d+)$", traj_id)
+        task_id, ep = (m.group(1), m.group(2)) if m else (traj_id, None)
+        rows = page.locator("#traj_table tr").filter(has_text=re.compile(rf"\b{re.escape(task_id)}\b"))
+        if ep is not None:
+            rows = rows.filter(has_text=re.compile(rf"\b{ep}\b"))
+        rows.first.click(force=True)
         page.wait_for_timeout(500)
 
     def test_agents_tab_has_status_column(self, page_with_exp: tuple) -> None:
@@ -188,7 +194,7 @@ class TestXRayStatusUI:
         if screenshots:
             page.screenshot(path=str(SCREENSHOT_DIR / "02_agents_tab.png"))
         table_html = self._table_text(page, "agent_table")
-        assert "✔" in table_html
+        assert "✅" in table_html
 
     def test_agents_tab_has_no_n_err_column(self, page_with_exp: tuple) -> None:
         page, _ = page_with_exp
@@ -216,7 +222,6 @@ class TestXRayStatusUI:
         self._wait_for_table_rows(page, "traj_table", min_rows=5)
         headers = [h.text_content() for h in page.locator("#traj_table table thead th").all()]
         assert any("task_id" in h for h in headers)
-        assert any("traj_id" in h for h in headers)
 
     def test_trajectories_tab_shows_retry_badge(self, page_with_exp: tuple) -> None:
         """The MAX_STEPS_REACHED trajectory has retry_count=1 — ×1 badge should appear."""

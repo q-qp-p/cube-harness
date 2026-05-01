@@ -94,17 +94,19 @@ def timed_trajectory(env_step_with_screenshot: EnvironmentOutput, agent_step_wit
 def multi_agent_trajectories() -> list[Trajectory]:
     """Multiple trajectories with different agents and tasks."""
     trajs = []
+    ep = 0
     for agent in ["agent_a", "agent_b"]:
         for task in ["task_1", "task_2"]:
             for seed in range(2):
                 traj = Trajectory(
-                    id=f"{agent}_{task}_{seed}",
+                    id=f"{task}_ep{ep}",
                     metadata={"agent_name": agent, "task_id": task, "seed": seed},
                     start_time=float(seed),
                     end_time=float(seed + 1),
                     reward_info={"reward": 1.0 if seed == 0 else 0.0},
                 )
                 trajs.append(traj)
+                ep += 1
     return trajs
 
 
@@ -228,7 +230,7 @@ class TestGetExperimentsTableRows:
             (ep_dir / "status.json").write_text(f'{{"status": "{status}"}}')
         rows = xray_utils.get_experiments_table_rows(tmp_path)
         row = next(r for r in rows if r["experiment"] == "exp_b")
-        assert "✔" in row["status"]
+        assert "✅" in row["status"]
         assert "▶️" in row["status"]
         assert "/ 2" in row["status"]
 
@@ -744,7 +746,7 @@ class TestBuildAgentTable:
         rows = xray_utils.build_agent_table(multi_agent_trajectories)
         agent_a_row = next(r for r in rows if r["agent_name"] == "agent_a")
         # fixture has 2 success + 2 fail per agent — collapsed to one ✓ count
-        assert "✔" in agent_a_row["status"]
+        assert "✅" in agent_a_row["status"]
         assert "🟢" not in agent_a_row["status"]
         assert "⚫" not in agent_a_row["status"]
 
@@ -790,18 +792,24 @@ class TestBuildTrajectoryTable:
         rows = xray_utils.build_trajectory_table(multi_agent_trajectories, "nonexistent_agent")
         assert rows == []
 
-    def test_has_task_id_and_traj_id_columns(self, multi_agent_trajectories: list[Trajectory]) -> None:
+    def test_has_task_id_and_seed_columns(self, multi_agent_trajectories: list[Trajectory]) -> None:
         rows = xray_utils.build_trajectory_table(multi_agent_trajectories, "agent_a")
         assert len(rows) > 0
         assert "task_id" in rows[0]
-        assert "traj_id" in rows[0]
+        assert "seed" in rows[0]
+        assert "_traj_id" in rows[0]
         assert "status" in rows[0]
+
+    def test_seed_column_omitted_when_all_none(self) -> None:
+        trajs = [Trajectory(id=f"task_1_ep{i}", metadata={"agent_name": "a", "task_id": "task_1"}) for i in range(3)]
+        rows = xray_utils.build_trajectory_table(trajs, "a")
+        assert "seed" not in rows[0]
 
     def test_traj_id_values_match_trajectory_ids(self, multi_agent_trajectories: list[Trajectory]) -> None:
         rows = xray_utils.build_trajectory_table(multi_agent_trajectories, "agent_a")
-        traj_ids = [r["traj_id"] for r in rows]
-        assert "agent_a_task_1_0" in traj_ids
-        assert "agent_a_task_1_1" in traj_ids
+        traj_ids = [r["_traj_id"] for r in rows]
+        assert "task_1_ep0" in traj_ids
+        assert "task_1_ep1" in traj_ids
 
     def test_no_aggregation_columns(self, multi_agent_trajectories: list[Trajectory]) -> None:
         """Removed aggregate columns: n_seeds, n_success, avg_steps, etc."""
@@ -1243,7 +1251,7 @@ class TestGetChatBranchesWithMessageObjects:
 class TestBuildStatusCell:
     def test_all_completed_shows_check_and_total(self) -> None:
         cell = xray_utils._build_status_cell(["success", "success", "fail"])
-        assert "✔" in cell
+        assert "✅" in cell
         assert "/ 3" in cell
 
     def test_mixed_statuses_shows_each_symbol(self) -> None:
@@ -1267,7 +1275,7 @@ class TestBuildStatusCell:
     def test_max_steps_folds_into_completed(self) -> None:
         # max_steps is a terminal outcome — collapses to ✓ at agent level like success/fail
         cell = xray_utils._build_status_cell(["max_steps"])
-        assert "✔" in cell
+        assert "✅" in cell
         assert "🎬" not in cell
 
     def test_cancelled_symbol(self) -> None:

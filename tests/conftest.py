@@ -318,7 +318,6 @@ def mock_episode(tmp_dir, mock_agent_config, mock_cube_task_config) -> Episode:
     )
 
 
-
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--xray-screenshots",

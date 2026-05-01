@@ -3,8 +3,6 @@ import time
 from pathlib import Path
 
 import pytest
-
-from cube_harness.episode_status import EpisodeStatus
 from cube.core import Action, Content, EnvironmentOutput, Observation
 from PIL import Image
 
@@ -13,6 +11,7 @@ from cube_harness.core import (
     Trajectory,
     TrajectoryStep,
 )
+from cube_harness.episode_status import EpisodeStatus
 from cube_harness.llm import LLMCall, LLMConfig, Message, Prompt
 from cube_harness.storage import FileStorage, _deserialize_step
 
@@ -1539,8 +1538,11 @@ class TestInjectEpisodeStatus:
     def test_error_fields_injected(self, tmp_dir: Path) -> None:
         storage = FileStorage(tmp_dir)
         self._write_episode(
-            storage, "task_1_ep0", "FAILED",
-            error_type="RuntimeError", error_message="OOM on GPU",
+            storage,
+            "task_1_ep0",
+            "FAILED",
+            error_type="RuntimeError",
+            error_message="OOM on GPU",
         )
         trajs = storage.load_all_trajectory_metadata()
         t = next(t for t in trajs if t.id == "task_1_ep0")

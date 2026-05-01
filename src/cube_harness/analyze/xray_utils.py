@@ -113,13 +113,13 @@ TERMINAL_STATUSES: frozenset[str] = frozenset(
 
 _STATUS_HTML: dict[str, str] = {
     # Canonical statuses (from status.json)
-    "queued":    "<span title='Queued — not yet started'>🕐</span>",
-    "running":   "<span title='Running'>▶️</span>",
-    "success":   "<span title='Completed — reward > 0'>🟢</span>",
-    "fail":      "<span title='Completed — no reward'>⚫</span>",
+    "queued": "<span title='Queued — not yet started'>🕐</span>",
+    "running": "<span title='Running'>▶️</span>",
+    "success": "<span title='Completed — reward > 0'>🟢</span>",
+    "fail": "<span title='Completed — no reward'>⚫</span>",
     "max_steps": "<span title='Max steps reached — step budget exhausted'>🎬</span>",
-    "failed":    "<span title='Failed — worker crashed'>⛔</span>",
-    "stale":     "<span title='Stale — heartbeat lost, dead worker'>👻</span>",
+    "failed": "<span title='Failed — worker crashed'>⛔</span>",
+    "stale": "<span title='Stale — heartbeat lost, dead worker'>👻</span>",
     "cancelled": "<span title='Cancelled'>🚫</span>",
     # Legacy heuristic (no status.json — pre-PR#315 experiments)
     "system_error": "<span title='System error — crashed (legacy inferred status)' style='color:#dc3545;font-weight:bold;font-size:14px'>✕</span>",
@@ -127,14 +127,14 @@ _STATUS_HTML: dict[str, str] = {
 
 # Plain-text labels for the header bar and other non-HTML contexts.
 _STATUS_LABEL: dict[str, str] = {
-    "queued":       "🕐 Queued",
-    "running":      "▶️ Running",
-    "success":      "🟢 Success",
-    "fail":         "⚫ Completed (no reward)",
-    "max_steps":    "🎬 Max steps reached",
-    "failed":       "⛔ Failed",
-    "stale":        "👻 Stale",
-    "cancelled":    "🚫 Cancelled",
+    "queued": "🕐 Queued",
+    "running": "▶️ Running",
+    "success": "🟢 Success",
+    "fail": "⚫ Completed (no reward)",
+    "max_steps": "🎬 Max steps reached",
+    "failed": "⛔ Failed",
+    "stale": "👻 Stale",
+    "cancelled": "🚫 Cancelled",
     "system_error": "✕ System error (legacy)",
 }
 
@@ -142,7 +142,7 @@ _STATUS_LABEL: dict[str, str] = {
 # Terminal-outcome statuses collapsed to ✔ in the agent-level aggregate view.
 # success + fail + max_steps are all "ran to completion"; avg_reward captures the breakdown.
 _TERMINAL_OUTCOME_STATUSES = frozenset({"success", "fail", "max_steps"})
-_COMPLETED_AGGREGATE_HTML = "<span title='Terminal — success, fail, or max steps' style='color:#888'>✔</span>"
+_COMPLETED_AGGREGATE_HTML = "<span title='Terminal — success, fail, or max steps'>✅</span>"
 
 
 def _build_status_cell(statuses: list[str]) -> str:
@@ -1010,6 +1010,72 @@ def get_logs_tab_markdown(traj: Trajectory | None, log_content: str) -> str:
     return "\n".join(parts)
 
 
+def load_retry_history(ep_dir: Path) -> list[dict[str, Any]]:
+    """Load error info from archived copies of an episode directory.
+
+    Archived dirs live at ``{ep_dir.parent}/{ep_dir.name}.archived_{timestamp}``.
+    Returns a list sorted by timestamp (oldest first), each entry containing:
+      timestamp, status, error_type, error_message, failure_text.
+    """
+    history: list[dict[str, Any]] = []
+    archived_prefix = f"{ep_dir.name}.archived_"
+    for candidate in ep_dir.parent.iterdir():
+        if not candidate.is_dir() or not candidate.name.startswith(archived_prefix):
+            continue
+        try:
+            ts = float(candidate.name[len(archived_prefix) :])
+        except ValueError:
+            ts = 0.0
+        entry: dict[str, Any] = {
+            "timestamp": ts,
+            "status": None,
+            "error_type": None,
+            "error_message": None,
+            "failure_text": None,
+        }
+        status_path = candidate / "status.json"
+        if status_path.exists():
+            try:
+                data = json.loads(status_path.read_text())
+                entry["status"] = data.get("status")
+                entry["error_type"] = data.get("error_type")
+                entry["error_message"] = data.get("error_message")
+            except Exception:
+                pass
+        failure_path = candidate / "failure.txt"
+        if failure_path.exists():
+            try:
+                entry["failure_text"] = failure_path.read_text()
+            except Exception:
+                pass
+        history.append(entry)
+    history.sort(key=lambda e: e["timestamp"])
+    return history
+
+
+def render_retry_history_md(history: list[dict[str, Any]], traj: Trajectory) -> str:
+    """Render retry history as markdown for the Retries tab."""
+    retry_count = traj.metadata.get("_retry_count", 0)
+    if not retry_count:
+        return "No retries for this trajectory."
+    if not history:
+        return f"This trajectory was retried {retry_count}× but no archived attempt data was found on disk."
+
+    parts: list[str] = [f"**{retry_count} retry attempt(s)** — showing oldest first.\n"]
+    for i, entry in enumerate(history, start=1):
+        status = entry["status"] or "unknown"
+        parts.append(f"---\n### Attempt {i} — `{status}`")
+        if entry["error_type"]:
+            parts.append(f"**Error type:** `{entry['error_type']}`")
+        if entry["error_message"]:
+            parts.append(f"**Error message:** {entry['error_message']}")
+        if entry["failure_text"]:
+            parts.append(f"**Stack trace:**\n```\n{entry['failure_text'].strip()}\n```")
+        if not entry["error_type"] and not entry["error_message"] and not entry["failure_text"]:
+            parts.append("*(No error detail recorded for this attempt.)*")
+    return "\n\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Statistics
 # ---------------------------------------------------------------------------
@@ -1094,9 +1160,7 @@ def _finished_rewards(trajectories: list[Trajectory]) -> list[float]:
     MAX_STEPS_REACHED is excluded — the episode was truncated, not a fair completion.
     """
     return [
-        compute_trajectory_stats(t)["final_reward"]
-        for t in trajectories
-        if trajectory_status(t) in ("success", "fail")
+        compute_trajectory_stats(t)["final_reward"] for t in trajectories if trajectory_status(t) in ("success", "fail")
     ]
 
 
@@ -1251,7 +1315,9 @@ def build_trajectory_table(trajectories: list[Trajectory], agent_key: str) -> li
     """Build one row per trajectory for a selected agent.
 
     Filters trajectories to those matching agent_key.
-    Columns: status, task_id, traj_id, n_steps, duration, tokens, cost
+    Displayed columns: status, task_id, [seed,] n_steps, duration, tokens, cost
+    The seed column is omitted when all trajectories have seed=None.
+    Hidden key _traj_id carries the full trajectory ID for selection.
     Sorted by task_id then start_time within a task.
     """
     agent_trajs = [t for t in trajectories if t.metadata.get("agent_name", "unknown") == agent_key]
@@ -1270,15 +1336,21 @@ def build_trajectory_table(trajectories: list[Trajectory], agent_key: str) -> li
         cost_str = f"${float(stats['cost']):.4f}" if float(stats["cost"]) > 0 else "-"
         rows.append(
             {
+                "_traj_id": traj.id,
                 "status": _STATUS_HTML[status] + retry_badge,
                 "task_id": html_lib.escape(task_id),
-                "traj_id": traj.id,
+                "seed": traj.metadata.get("seed"),
                 "n_steps": stats["n_env_steps"],
                 "duration": duration_str,
                 "tokens": tokens_str,
                 "cost": cost_str,
             }
         )
+
+    if not any(r["seed"] is not None for r in rows):
+        for r in rows:
+            del r["seed"]
+
     return rows
 
 
