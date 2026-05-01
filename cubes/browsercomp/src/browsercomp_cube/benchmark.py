@@ -40,6 +40,18 @@ class BrowseCompBenchmarkConfig(BenchmarkConfig[BrowseCompTaskMetadata]):
         description="BrowseComp benchmark — hard web information retrieval requiring multi-step browsing",
         num_tasks=1266,
         tags=["web", "browser", "reasoning", "nlp"],
+        named_subsets={
+            "art": ("topic", "Art"),
+            "geography": ("topic", "Geography"),
+            "history": ("topic", "History"),
+            "music": ("topic", "Music"),
+            "other": ("topic", "Other"),
+            "politics": ("topic", "Politics"),
+            "science-and-technology": ("topic", "Science & technology"),
+            "sports": ("topic", "Sports"),
+            "tv-shows-and-movies": ("topic", "TV shows & movies"),
+            "video-games": ("topic", "Video games"),
+        },
     )
     task_config_class: ClassVar[type[TaskConfig]] = BrowseCompTaskConfig
     benchmark_class: ClassVar[type[Benchmark]] = BrowseCompBenchmark

@@ -30,6 +30,39 @@ def test_browsecomp_benchmark_config_round_trip() -> None:
     assert rehydrated == cfg
 
 
+_EXPECTED_SUBSETS = {
+    "art": ("Art", 127),
+    "geography": ("Geography", 70),
+    "history": ("History", 125),
+    "music": ("Music", 116),
+    "other": ("Other", 197),
+    "politics": ("Politics", 59),
+    "science-and-technology": ("Science & technology", 173),
+    "sports": ("Sports", 123),
+    "tv-shows-and-movies": ("TV shows & movies", 205),
+    "video-games": ("Video games", 71),
+}
+
+
+def test_named_subsets_partition_dataset() -> None:
+    cfg = BrowseCompBenchmarkConfig(scorer_model="unused")
+    assert set(BrowseCompBenchmarkConfig.named_subsets()) == set(_EXPECTED_SUBSETS)
+    total = sum(len(cfg.named_subset(name).task_ids) for name in _EXPECTED_SUBSETS)
+    assert total == cfg.benchmark_metadata.num_tasks == len(cfg.tasks())
+
+
+@pytest.mark.parametrize(("name", "expected"), list(_EXPECTED_SUBSETS.items()))
+def test_named_subset_filters_by_topic(name: str, expected: tuple[str, int]) -> None:
+    expected_topic, expected_count = expected
+    cfg = BrowseCompBenchmarkConfig(scorer_model="unused")
+    sub = cfg.named_subset(name)
+    tasks = list(sub.tasks().values())
+    assert len(tasks) == expected_count
+    assert {tm.topic for tm in tasks} == {expected_topic}
+    rehydrated = BrowseCompBenchmarkConfig.model_validate_json(sub.model_dump_json())
+    assert rehydrated.task_ids == sub.task_ids
+
+
 def test_browsecomp_task_config_round_trip() -> None:
     metadata = BrowseCompTaskMetadata(id="browsecomp-test", topic="debug")
     cfg = BrowseCompTaskConfig(metadata=metadata, scorer_model="gpt-5.4-mini")
