@@ -158,11 +158,11 @@ _COMPLETED_AGGREGATE_HTML = '<span style="color:#888">✓</span>'
 
 
 def _build_status_cell(statuses: list[str]) -> str:
-    """Build the agent-table status cell: ``15✓ + 4▶️ + 2⛔ = 21``.
+    """Build the agent-table status cell: ``(15✓ + 4▶️) / 19`` or ``15✓ / 15``.
 
     All terminal-outcome statuses (success, fail, max_steps) collapse to ✓ so the
-    agent row stays readable. Per-status detail lives in the Tasks/Seeds tabs.
-    Total always equals len(statuses).
+    agent row stays readable. Per-status detail lives in the Trajectories tab.
+    Total always equals len(statuses). Parentheses only added when there are multiple parts.
     """
     n_terminal = sum(1 for s in statuses if s in _TERMINAL_OUTCOME_STATUSES)
     counts: dict[str, int] = {}
@@ -180,7 +180,10 @@ def _build_status_cell(statuses: list[str]) -> str:
             parts.append(f"{n}{_STATUS_SYMBOL.get(key, key)}")
 
     total = len(statuses)
-    return " + ".join(parts) + f" = {total}"
+    inner = " + ".join(parts)
+    if len(parts) > 1:
+        inner = f"({inner})"
+    return f"{inner} / {total}"
 
 
 def build_progress_html(

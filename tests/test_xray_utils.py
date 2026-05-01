@@ -230,7 +230,7 @@ class TestGetExperimentsTableRows:
         row = next(r for r in rows if r["experiment"] == "exp_b")
         assert "✓" in row["status"]
         assert "▶️" in row["status"]
-        assert "= 2" in row["status"]
+        assert "/ 2" in row["status"]
 
 
 # ---------------------------------------------------------------------------
@@ -734,10 +734,10 @@ class TestBuildAgentTable:
         assert "n_running" not in rows[0]
 
     def test_status_cell_contains_total(self, multi_agent_trajectories: list[Trajectory]) -> None:
-        """Status cell ends with '= N' showing the total trajectory count."""
+        """Status cell shows '/ N' total trajectory count."""
         rows = xray_utils.build_agent_table(multi_agent_trajectories)
         agent_a_row = next(r for r in rows if r["agent_name"] == "agent_a")
-        assert "= 4" in agent_a_row["status"]
+        assert "/ 4" in agent_a_row["status"]
 
     def test_status_cell_collapses_success_and_fail(self, multi_agent_trajectories: list[Trajectory]) -> None:
         """Success and fail both show as ✓ in the agent table (avg_reward has the breakdown)."""
@@ -1244,14 +1244,14 @@ class TestBuildStatusCell:
     def test_all_completed_shows_check_and_total(self) -> None:
         cell = xray_utils._build_status_cell(["success", "success", "fail"])
         assert "✓" in cell
-        assert "= 3" in cell
+        assert "/ 3" in cell
 
     def test_mixed_statuses_shows_each_symbol(self) -> None:
         cell = xray_utils._build_status_cell(["success", "running", "failed", "stale"])
         assert "▶️" in cell
         assert "⛔" in cell
         assert "👻" in cell
-        assert "= 4" in cell
+        assert "/ 4" in cell
 
     def test_success_and_fail_collapse_to_one_count(self) -> None:
         cell = xray_utils._build_status_cell(["success", "success", "fail"])
