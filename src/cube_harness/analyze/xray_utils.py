@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from cube_harness.core import AgentOutput, Trajectory, TrajectoryStep
 from cube_harness.episode_status import STATUS_FILENAME, EpisodeStatus
 from cube_harness.episode_status import TERMINAL_STATUSES as _EPISODE_TERMINAL_STATUSES
+from cube_harness.exp_runner import DEFAULT_CANCEL_GRACE_S, DEFAULT_STEP_TIMEOUT_S
 from cube_harness.llm import LLMCall
 
 # ---------------------------------------------------------------------------
@@ -372,7 +373,7 @@ def _parse_experiment_config(exp_dir: Path) -> dict[str, str]:
     return {"agent": agent, "model": model, "benchmark": benchmark}
 
 
-GHOST_TIMEOUT = 4 * 3600  # seconds: 4 hours of heartbeat silence → episode is dead
+GHOST_TIMEOUT = DEFAULT_STEP_TIMEOUT_S + DEFAULT_CANCEL_GRACE_S  # mirrors runner's kill threshold
 _XRAY_CACHE_FILENAME = ".xray_summary.json"
 
 
