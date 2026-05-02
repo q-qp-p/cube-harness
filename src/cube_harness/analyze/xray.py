@@ -1099,6 +1099,8 @@ def run_xray(
         storage = state.current_storage()
         if not traj or not storage:
             return "No trajectory selected."
+        if not isinstance(storage, FileStorage):
+            return "Retry history is only available for filesystem-backed experiments."
         ep_dir = storage._episode_dir(traj.id)
         history = xray_utils.load_retry_history(ep_dir)
         return xray_utils.render_retry_history_md(history, traj)
