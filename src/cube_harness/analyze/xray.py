@@ -812,15 +812,19 @@ def run_xray(
         if evt is None or evt.index is None or traj_df is None or len(traj_df) == 0:
             return [], StepId(step=0)
         row = evt.index[0]
-        if row >= len(state._traj_row_ids):
+        # Recompute traj_ids from the live state rather than reading the shared
+        # _traj_row_ids snapshot, which on_bg_load_tick may overwrite concurrently.
+        agent_key = state.selected_agent_key
+        if agent_key is None:
             return _rows_to_table([]), StepId(step=0)
-        traj_id = state._traj_row_ids[row]
+        current_traj_rows = xray_utils.build_trajectory_table(state.trajectories, agent_key)
+        current_traj_row_ids = [r["_traj_id"] for r in current_traj_rows]
+        state._traj_row_ids = current_traj_row_ids
+        if row >= len(current_traj_row_ids):
+            return _rows_to_table([]), StepId(step=0)
+        traj_id = current_traj_row_ids[row]
         state.select_trajectory(traj_id)
-        if state.selected_agent_key is None:
-            return _rows_to_table([]), StepId(step=0)
-        traj_rows = xray_utils.build_trajectory_table(state.trajectories, state.selected_agent_key)
-        state._traj_row_ids = [r["_traj_id"] for r in traj_rows]
-        return _rows_to_table(traj_rows, traj_id, "_traj_id"), StepId(step=0)
+        return _rows_to_table(current_traj_rows, traj_id, "_traj_id"), StepId(step=0)
 
     def on_bg_load_tick() -> tuple[Any, Any, Any, Any, str, gr.Timer, gr.Tab, gr.Tab, gr.Tab]:
         """Periodic refresh handler: bulk-loads stubs, then live-polls for new/changed trajectories.

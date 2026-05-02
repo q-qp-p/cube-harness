@@ -517,16 +517,8 @@ class FileStorage:
                 failure_path = ep_dir / "failure.txt"
                 if failure_path.exists():
                     metadata["_failure_text"] = failure_path.read_text()
-                ep_status = EpisodeStatus.read(ep_dir / STATUS_FILENAME)
-                if ep_status is not None:
-                    metadata.update(
-                        {
-                            "_episode_status": ep_status.status,
-                            "_retry_count": ep_status.retry_count,
-                            "_error_type": ep_status.error_type,
-                            "_error_message": ep_status.error_message,
-                        }
-                    )
+                stub_data: dict = {"metadata": metadata}
+                self._maybe_inject_episode_status(ep_dir, stub_data)
                 stubs.append(Trajectory(id=traj_id, metadata=metadata))
             except Exception:
                 logger.debug(f"Could not read episode config for missing stub: {ep_dir}")
