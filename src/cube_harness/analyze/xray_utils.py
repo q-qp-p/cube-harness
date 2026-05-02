@@ -1155,13 +1155,36 @@ def compute_trajectory_stats(traj: Trajectory) -> dict[str, Any]:
 
 
 def _finished_rewards(trajectories: list[Trajectory]) -> list[float]:
-    """Return final rewards for trajectories with a terminal outcome (COMPLETED episodes only).
+    """Return final rewards for trajectories that ran to completion.
 
-    MAX_STEPS_REACHED is excluded — the episode was truncated, not a fair completion.
+    Includes success, fail, and max_steps — all terminal outcomes where reward is meaningful.
     """
     return [
-        compute_trajectory_stats(t)["final_reward"] for t in trajectories if trajectory_status(t) in ("success", "fail")
+        compute_trajectory_stats(t)["final_reward"]
+        for t in trajectories
+        if trajectory_status(t) in ("success", "fail", "max_steps")
     ]
+
+
+def _reward_mean_stderr(rewards: list[float]) -> tuple[float, float]:
+    """Return (mean, standard_error) for a list of rewards.
+
+    Uses the binomial standard error sqrt(p(1-p)/n) when all rewards are 0 or 1
+    (tighter than the sample formula for binary outcomes); otherwise the sample
+    standard error std(rewards, ddof=1) / sqrt(n).
+    """
+    n = len(rewards)
+    if n == 0:
+        return 0.0, 0.0
+    mean = sum(rewards) / n
+    if all(r in (0, 1) for r in rewards):
+        stderr = (mean * (1 - mean) / n) ** 0.5
+    elif n > 1:
+        var = sum((r - mean) ** 2 for r in rewards) / (n - 1)
+        stderr = (var / n) ** 0.5
+    else:
+        stderr = 0.0
+    return mean, stderr
 
 
 def compute_experiment_stats(trajectories: list[Trajectory]) -> str:
@@ -1297,13 +1320,13 @@ def build_agent_table(trajectories: list[Trajectory]) -> list[dict[str, Any]]:
         statuses = [trajectory_status(t) for t in agent_trajs]
         finished = _finished_rewards(agent_trajs)
         total_cost = sum(float(s["cost"]) for s in all_stats)
-        avg_reward = sum(finished) / len(finished) if finished else 0.0
+        mean, stderr = _reward_mean_stderr(finished)
         cost_str = f"${total_cost:.4f}" if total_cost > 0 else "-"
 
         rows.append(
             {
                 "agent_name": agent_key,
-                "avg_reward": round(avg_reward, 3),
+                "avg_reward": f"{mean:.3f} ± {stderr:.3f}",
                 "status": _build_status_cell(statuses),
                 "total_cost": cost_str,
             }

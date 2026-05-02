@@ -692,6 +692,28 @@ class TestComputeExperimentStats:
         assert "prompt" in result
 
 
+class TestRewardMeanStderr:
+    def test_empty_returns_zeros(self) -> None:
+        assert xray_utils._reward_mean_stderr([]) == (0.0, 0.0)
+
+    def test_binary_uses_binomial_formula(self) -> None:
+        # 3 successes / 4 trials → p=0.75, stderr = sqrt(0.75*0.25/4)
+        mean, stderr = xray_utils._reward_mean_stderr([1, 1, 1, 0])
+        assert mean == pytest.approx(0.75)
+        assert stderr == pytest.approx((0.75 * 0.25 / 4) ** 0.5)
+
+    def test_continuous_uses_sample_formula(self) -> None:
+        rewards = [0.2, 0.4, 0.6, 0.8]
+        mean, stderr = xray_utils._reward_mean_stderr(rewards)
+        n = len(rewards)
+        expected_var = sum((r - mean) ** 2 for r in rewards) / (n - 1)
+        assert mean == pytest.approx(0.5)
+        assert stderr == pytest.approx((expected_var / n) ** 0.5)
+
+    def test_single_value_returns_zero_stderr(self) -> None:
+        assert xray_utils._reward_mean_stderr([0.5]) == (0.5, 0.0)
+
+
 # ---------------------------------------------------------------------------
 # TestBuildAgentTable
 # ---------------------------------------------------------------------------
@@ -726,6 +748,15 @@ class TestBuildAgentTable:
         rows = xray_utils.build_agent_table(multi_agent_trajectories)
         keys = list(rows[0].keys())
         assert keys.index("avg_reward") < keys.index("status")
+
+    def test_avg_reward_includes_stderr(self, multi_agent_trajectories: list[Trajectory]) -> None:
+        """avg_reward cell is formatted as 'mean ± stderr' with 3 decimals each."""
+        rows = xray_utils.build_agent_table(multi_agent_trajectories)
+        for row in rows:
+            assert "±" in row["avg_reward"]
+            mean_part, stderr_part = row["avg_reward"].split(" ± ")
+            assert len(mean_part.split(".")[1]) == 3
+            assert len(stderr_part.split(".")[1]) == 3
 
     def test_has_status_column_not_n_err_n_running(self, multi_agent_trajectories: list[Trajectory]) -> None:
         """n_err and n_running replaced by the unified status cell."""
