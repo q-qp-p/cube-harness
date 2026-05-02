@@ -397,7 +397,10 @@ def _promote_ghost_episodes(exp_dir: Path) -> None:
             status.status = "STALE"
             if status.ended_at is None:
                 status.ended_at = hb
-            status.write(ep_dir / STATUS_FILENAME)
+            try:
+                status.write(ep_dir / STATUS_FILENAME)
+            except OSError:
+                pass  # best-effort: race with runner archiving the dir is harmless
 
 
 def _all_episodes_terminal(exp_dir: Path) -> bool:
