@@ -1,5 +1,8 @@
 """Tests for cube_harness.analyze.xray_utils module."""
 
+import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -12,6 +15,7 @@ from cube_harness.core import (
     Trajectory,
     TrajectoryStep,
 )
+from cube_harness.episode_status import STATUS_FILENAME, EpisodeStatus
 from cube_harness.llm import LLMCall, LLMConfig, Message, Prompt, Usage
 
 # ---------------------------------------------------------------------------
@@ -224,15 +228,82 @@ class TestGetExperimentsTableRows:
         assert row["agent"] == "react_agent"
 
     def test_status_cell_from_status_json(self, tmp_path: Path) -> None:
-        for ep_name, status in [("ep0", "COMPLETED"), ("ep1", "RUNNING")]:
+        now = time.time()
+        status_data = [
+            ("ep0", {"status": "COMPLETED", "task_id": "t0", "episode_id": 0, "started_at": now, "ended_at": now}),
+            (
+                "ep1",
+                {"status": "RUNNING", "task_id": "t1", "episode_id": 1, "started_at": now, "last_heartbeat_at": now},
+            ),
+        ]
+        for ep_name, data in status_data:
             ep_dir = tmp_path / "exp_b" / "episodes" / ep_name
             ep_dir.mkdir(parents=True)
-            (ep_dir / "status.json").write_text(f'{{"status": "{status}"}}')
+            (ep_dir / "status.json").write_text(json.dumps(data))
         rows = xray_utils.get_experiments_table_rows(tmp_path)
         row = next(r for r in rows if r["experiment"] == "exp_b")
         assert "✅" in row["status"]
         assert "▶️" in row["status"]
         assert "/ 2" in row["status"]
+
+    def test_cache_written_when_all_terminal(self, tmp_path: Path) -> None:
+        now = time.time()
+        ep_dir = tmp_path / "exp_c" / "episodes" / "ep0"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "status.json").write_text(
+            json.dumps({"status": "COMPLETED", "task_id": "t0", "episode_id": 0, "started_at": now, "ended_at": now})
+        )
+        xray_utils.get_experiments_table_rows(tmp_path)
+        cache = tmp_path / "exp_c" / xray_utils._XRAY_CACHE_FILENAME
+        assert cache.exists()
+
+    def test_cache_not_written_when_running(self, tmp_path: Path) -> None:
+        now = time.time()
+        ep_dir = tmp_path / "exp_d" / "episodes" / "ep0"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "status.json").write_text(
+            json.dumps(
+                {"status": "RUNNING", "task_id": "t0", "episode_id": 0, "started_at": now, "last_heartbeat_at": now}
+            )
+        )
+        xray_utils.get_experiments_table_rows(tmp_path)
+        cache = tmp_path / "exp_d" / xray_utils._XRAY_CACHE_FILENAME
+        assert not cache.exists()
+
+    def test_cache_invalidated_on_episode_dir_mtime_change(self, tmp_path: Path) -> None:
+        now = time.time()
+        ep_dir = tmp_path / "exp_e" / "episodes" / "ep0"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "status.json").write_text(
+            json.dumps({"status": "COMPLETED", "task_id": "t0", "episode_id": 0, "started_at": now, "ended_at": now})
+        )
+        xray_utils.get_experiments_table_rows(tmp_path)
+        cache = tmp_path / "exp_e" / xray_utils._XRAY_CACHE_FILENAME
+        assert cache.exists()
+        # Touch an episode dir to simulate a new write
+        future = now + 100
+        os.utime(ep_dir, (future, future))
+        assert not xray_utils._is_cache_valid(tmp_path / "exp_e", cache.stat().st_mtime)
+
+    def test_ghost_episode_promoted_to_stale(self, tmp_path: Path) -> None:
+        old_ts = time.time() - xray_utils.GHOST_TIMEOUT - 100
+        ep_dir = tmp_path / "exp_f" / "episodes" / "ep0"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "status.json").write_text(
+            json.dumps(
+                {
+                    "status": "RUNNING",
+                    "task_id": "t0",
+                    "episode_id": 0,
+                    "started_at": old_ts,
+                    "last_heartbeat_at": old_ts,
+                }
+            )
+        )
+        xray_utils._promote_ghost_episodes(tmp_path / "exp_f")
+        updated = EpisodeStatus.read(ep_dir / STATUS_FILENAME)
+        assert updated is not None
+        assert updated.status == "STALE"
 
 
 # ---------------------------------------------------------------------------
@@ -696,11 +767,14 @@ class TestRewardMeanStderr:
     def test_empty_returns_zeros(self) -> None:
         assert xray_utils._reward_mean_stderr([]) == (0.0, 0.0)
 
-    def test_binary_uses_binomial_formula(self) -> None:
-        # 3 successes / 4 trials → p=0.75, stderr = sqrt(0.75*0.25/4)
-        mean, stderr = xray_utils._reward_mean_stderr([1, 1, 1, 0])
+    def test_binary_uses_sample_formula(self) -> None:
+        # 3 successes / 4 trials → p=0.75, stderr = std(ddof=1)/sqrt(n)
+        rewards = [1.0, 1.0, 1.0, 0.0]
+        mean, stderr = xray_utils._reward_mean_stderr(rewards)
+        n = len(rewards)
         assert mean == pytest.approx(0.75)
-        assert stderr == pytest.approx((0.75 * 0.25 / 4) ** 0.5)
+        expected_var = sum((r - mean) ** 2 for r in rewards) / (n - 1)
+        assert stderr == pytest.approx((expected_var / n) ** 0.5)
 
     def test_continuous_uses_sample_formula(self) -> None:
         rewards = [0.2, 0.4, 0.6, 0.8]

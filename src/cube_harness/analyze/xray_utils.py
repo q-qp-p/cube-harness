@@ -7,8 +7,10 @@ This makes them independently testable without any UI framework.
 import datetime
 import html as html_lib
 import json
+import os
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,8 @@ from PIL import Image
 from pydantic import BaseModel
 
 from cube_harness.core import AgentOutput, Trajectory, TrajectoryStep
+from cube_harness.episode_status import STATUS_FILENAME, EpisodeStatus
+from cube_harness.episode_status import TERMINAL_STATUSES as _EPISODE_TERMINAL_STATUSES
 from cube_harness.llm import LLMCall
 
 # ---------------------------------------------------------------------------
@@ -368,45 +372,145 @@ def _parse_experiment_config(exp_dir: Path) -> dict[str, str]:
     return {"agent": agent, "model": model, "benchmark": benchmark}
 
 
-def _build_exp_status_cell(exp_dir: Path) -> str:
-    """Build a compact status cell for an experiment directory, same format as agent table.
+GHOST_TIMEOUT = 4 * 3600  # seconds: 4 hours of heartbeat silence → episode is dead
+_XRAY_CACHE_FILENAME = ".xray_summary.json"
 
-    Reads status.json from each episode directory (O(n_episodes) JSON reads).
-    Falls back to a plain count when no status files exist.
+
+def _promote_ghost_episodes(exp_dir: Path) -> None:
+    """Write STALE into status.json for RUNNING/QUEUED episodes whose heartbeat is dead.
+
+    Fixes experiments where the runner crashed without marking episodes terminal.
+    This lets the cache machinery treat the experiment as finished so it can be frozen.
     """
     episodes_dir = exp_dir / "episodes"
     if not episodes_dir.exists():
-        n = _count_episodes(exp_dir)
-        return f"? = {n}" if n > 0 else "—"
-
-    statuses: list[str] = []
+        return
+    now = time.time()
     for ep_dir in episodes_dir.iterdir():
         if not ep_dir.is_dir() or ".archived_" in ep_dir.name:
             continue
-        status_file = ep_dir / "status.json"
-        if status_file.exists():
-            try:
-                with open(status_file) as f:
-                    raw = json.load(f).get("status", "")
-                statuses.append(_RAW_STATUS_MAP.get(raw, "system_error"))
-            except Exception:
-                statuses.append("system_error")
-        elif (ep_dir / "episode.metadata.json").exists():
-            statuses.append("success")  # completed without status.json (legacy)
-        else:
-            statuses.append("queued")
+        status = EpisodeStatus.read(ep_dir / STATUS_FILENAME)
+        if status is None or status.status not in ("RUNNING", "QUEUED"):
+            continue
+        hb = status.last_heartbeat_at or status.started_at
+        if now - hb > GHOST_TIMEOUT:
+            status.status = "STALE"
+            if status.ended_at is None:
+                status.ended_at = hb
+            status.write(ep_dir / STATUS_FILENAME)
 
-    if not statuses:
-        return "—"
-    return _build_status_cell(statuses)
+
+def _all_episodes_terminal(exp_dir: Path) -> bool:
+    """Return True when every non-archived episode has a terminal status.
+
+    Episodes with no status.json but an episode.metadata.json are treated as
+    terminal (pre-PR#315 legacy format — always completed by definition).
+    V1 experiments (no episodes/ dir) return True unconditionally.
+    """
+    episodes_dir = exp_dir / "episodes"
+    if not episodes_dir.exists():
+        return True  # V1 flat layout — always historical/done
+    for ep_dir in episodes_dir.iterdir():
+        if not ep_dir.is_dir() or ".archived_" in ep_dir.name:
+            continue
+        status = EpisodeStatus.read(ep_dir / STATUS_FILENAME)
+        if status is None:
+            # No status.json: terminal only if episode.metadata.json exists (legacy done)
+            if not (ep_dir / "episode.metadata.json").exists():
+                return False
+        elif status.status not in _EPISODE_TERMINAL_STATUSES:
+            return False
+    return True
+
+
+def _is_cache_valid(exp_dir: Path, cache_mtime: float) -> bool:
+    """Return False if episodes/ or any episode dir was modified after the cache was written.
+
+    Uses only stat() calls (no file reads). Catches:
+    - New episode dirs created (episodes/ dir mtime changes).
+    - Episode relaunched: runner archives old dir and creates new one → episodes/ mtime.
+    - Status.json written: EpisodeStatus.write() creates a .tmp sibling first, which
+      updates the episode dir mtime via the tmp-file creation step.
+    """
+    episodes_dir = exp_dir / "episodes"
+    if not episodes_dir.exists():
+        return True
+    if episodes_dir.stat().st_mtime > cache_mtime:
+        return False
+    for ep_dir in episodes_dir.iterdir():
+        if ep_dir.is_dir() and ".archived_" not in ep_dir.name:
+            if ep_dir.stat().st_mtime > cache_mtime:
+                return False
+    return True
+
+
+def _compute_exp_row(exp_dir: Path) -> dict[str, Any]:
+    """Compute display fields for one experiment by reading per-episode status.json files.
+
+    V2 (episodes/ dir): reads status.json per episode — O(N_episodes) JSON reads.
+    V1 (flat *.metadata.json): reads trajectory metadata per episode.
+    Returns: {date, agent, model, benchmark, status, avg_reward}.
+    """
+    cfg_info = _parse_experiment_config(exp_dir)
+    statuses: list[str] = []
+    rewards: list[float] = []
+
+    episodes_dir = exp_dir / "episodes"
+    if episodes_dir.exists():
+        for ep_dir in episodes_dir.iterdir():
+            if not ep_dir.is_dir() or ".archived_" in ep_dir.name:
+                continue
+            status = EpisodeStatus.read(ep_dir / STATUS_FILENAME)
+            if status is not None:
+                statuses.append(_RAW_STATUS_MAP.get(status.status, "system_error"))
+                if status.status in ("COMPLETED", "MAX_STEPS_REACHED") and status.reward is not None:
+                    rewards.append(float(status.reward))
+            elif (ep_dir / "episode.metadata.json").exists():
+                statuses.append("success")  # pre-status.json legacy episode
+            else:
+                statuses.append("queued")
+    else:
+        # V1: read flat *.metadata.json for status and reward
+        for search_dir in (exp_dir, exp_dir / "trajectories"):
+            if not search_dir.exists():
+                continue
+            for meta_file in search_dir.glob("*.metadata.json"):
+                if ".archived_" in meta_file.name:
+                    continue
+                try:
+                    with open(meta_file) as f:
+                        data = json.load(f)
+                    reward_info = data.get("reward_info") or {}
+                    reward = reward_info.get("reward")
+                    if data.get("end_time") is not None:
+                        statuses.append("success" if (reward or 0) > 0 else "fail")
+                        if reward is not None:
+                            rewards.append(float(reward))
+                    else:
+                        statuses.append("queued")
+                except Exception:
+                    statuses.append("system_error")
+
+    status_html = _build_status_cell(statuses) if statuses else "—"
+    mean, stderr = _reward_mean_stderr(rewards)
+    avg_reward_str = f"{mean:.3f} ± {stderr:.3f}" if rewards else "—"
+
+    return {
+        "date": _parse_exp_date(exp_dir),
+        "agent": cfg_info["agent"],
+        "model": cfg_info["model"],
+        "benchmark": cfg_info["benchmark"],
+        "status": status_html,
+        "avg_reward": avg_reward_str,
+    }
 
 
 def get_experiments_table_rows(results_dir: Path) -> list[dict[str, Any]]:
     """Return one row per experiment directory for the Experiments selector table.
 
-    Columns: selected, experiment, date, agent, model, benchmark, status.
-    agent/model/benchmark from experiment_config.json (fallback: episode metadata).
-    status is a compact cell matching the agent-table format: ``2✓ + 1▶️ = 3``.
+    Columns: selected, experiment, date, agent, model, benchmark, status, avg_reward.
+    Uses a per-experiment .xray_summary.json cache. Cache is written once all episodes
+    are terminal (including after ghost promotion) and invalidated via episode dir mtime.
     Sorted most-recent first.
     """
     if not results_dir or not results_dir.exists():
@@ -416,18 +520,27 @@ def get_experiments_table_rows(results_dir: Path) -> list[dict[str, Any]]:
     for dir_path in results_dir.iterdir():
         if not _is_experiment_dir(dir_path):
             continue
-        cfg_info = _parse_experiment_config(dir_path)
-        rows.append(
-            {
-                "selected": False,
-                "experiment": dir_path.name,
-                "date": _parse_exp_date(dir_path),
-                "agent": cfg_info["agent"],
-                "model": cfg_info["model"],
-                "benchmark": cfg_info["benchmark"],
-                "status": _build_exp_status_cell(dir_path),
-            }
-        )
+        cache_path = dir_path / _XRAY_CACHE_FILENAME
+        if cache_path.exists():
+            try:
+                cache_mtime = cache_path.stat().st_mtime
+                if _is_cache_valid(dir_path, cache_mtime):
+                    with open(cache_path) as f:
+                        cached = json.load(f)
+                    rows.append({"selected": False, "experiment": dir_path.name, **cached})
+                    continue
+            except Exception:
+                pass
+        _promote_ghost_episodes(dir_path)
+        summary = _compute_exp_row(dir_path)
+        if _all_episodes_terminal(dir_path):
+            try:
+                tmp = cache_path.parent / (cache_path.name + ".tmp")
+                tmp.write_text(json.dumps(summary, indent=2))
+                os.replace(tmp, cache_path)
+            except Exception:
+                pass
+        rows.append({"selected": False, "experiment": dir_path.name, **summary})
     rows.sort(key=lambda r: r["date"], reverse=True)
     return rows
 
@@ -1167,19 +1280,12 @@ def _finished_rewards(trajectories: list[Trajectory]) -> list[float]:
 
 
 def _reward_mean_stderr(rewards: list[float]) -> tuple[float, float]:
-    """Return (mean, standard_error) for a list of rewards.
-
-    Uses the binomial standard error sqrt(p(1-p)/n) when all rewards are 0 or 1
-    (tighter than the sample formula for binary outcomes); otherwise the sample
-    standard error std(rewards, ddof=1) / sqrt(n).
-    """
+    """Return (mean, sample_stderr) for a list of rewards using ddof=1."""
     n = len(rewards)
     if n == 0:
         return 0.0, 0.0
     mean = sum(rewards) / n
-    if all(r in (0, 1) for r in rewards):
-        stderr = (mean * (1 - mean) / n) ** 0.5
-    elif n > 1:
+    if n > 1:
         var = sum((r - mean) ** 2 for r in rewards) / (n - 1)
         stderr = (var / n) ** 0.5
     else:

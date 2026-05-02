@@ -1210,11 +1210,11 @@ def run_xray(
                     exp_refresh_btn = gr.Button("↺ Refresh", scale=0, size="sm")
                     exp_archive_btn = gr.Button("🗃 Archive selected", scale=0, size="sm", variant="secondary")
                 exp_table = gr.DataFrame(
-                    headers=["☑", "experiment", "date", "agent", "model", "benchmark", "status"],
-                    datatype=["bool", "str", "str", "str", "str", "str", "html"],
-                    col_count=(7, "fixed"),
+                    headers=["☑", "experiment", "date", "agent", "model", "benchmark", "status", "avg_reward"],
+                    datatype=["bool", "str", "str", "str", "str", "str", "html", "str"],
+                    col_count=(8, "fixed"),
                     interactive=True,
-                    static_columns=[1, 2, 3, 4, 5, 6],
+                    static_columns=[1, 2, 3, 4, 5, 6, 7],
                     max_height=260,
                     show_label=False,
                     elem_id="exp_table",
@@ -1361,7 +1361,16 @@ def run_xray(
             if auto_select_first and rows:
                 rows[0]["selected"] = True
             return [
-                [r["selected"], r["experiment"], r["date"], r["agent"], r["model"], r["benchmark"], r["status"]]
+                [
+                    r["selected"],
+                    r["experiment"],
+                    r["date"],
+                    r["agent"],
+                    r["model"],
+                    r["benchmark"],
+                    r["status"],
+                    r.get("avg_reward", "—"),
+                ]
                 for r in rows
             ]
 
