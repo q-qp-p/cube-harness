@@ -1464,6 +1464,11 @@ def run_xray(
             outputs=logs_md,
         )
         step_id.change(
+            fn=if_active("Retries")(_render_retries),
+            inputs=[active_tab, step_id],
+            outputs=retries_md,
+        )
+        step_id.change(
             fn=if_active("Debug", 3)(_render_debug),
             inputs=[active_tab, step_id],
             outputs=[raw_json, llm_calls_code, llm_tools_code],
