@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from cube_harness.core import (
     Trajectory,
     TrajectoryStep,
 )
+from cube_harness.episode_status import EpisodeStatus
 from cube_harness.llm import LLMCall, LLMConfig, Message, Prompt
 from cube_harness.storage import FileStorage, _deserialize_step
 
@@ -127,7 +129,7 @@ class TestFileStorageLogs:
     def test_get_log_path(self, tmp_dir: Path) -> None:
         storage = FileStorage(tmp_dir)
         log_path = storage.get_log_path("task_a_ep3")
-        assert log_path == Path(tmp_dir) / "task_a_ep3.log"
+        assert log_path == Path(tmp_dir) / "episodes" / "task_a_ep3" / "episode.log"
 
     def test_load_logs_returns_full_file_contents(self, tmp_dir: Path) -> None:
         storage = FileStorage(tmp_dir)
@@ -379,67 +381,63 @@ class TestFileStorageRoundtrip:
 
 
 class TestFileStorageEpisodeConfig:
-    def test_save_episode_config_creates_directory(self, tmp_dir, mock_agent_config, mock_tool_config):
+    def test_save_episode_config_creates_directory(self, tmp_dir, mock_agent_config, mock_cube_task_config):
         from cube_harness.episode import EpisodeConfig
 
         storage = FileStorage(tmp_dir)
         episode_config = EpisodeConfig(
             id=0,
-            task_id="test_task",
             agent_config=mock_agent_config,
-            tool_config=mock_tool_config,
+            task_config=mock_cube_task_config,
             exp_name="test_exp",
             output_dir=tmp_dir,
             max_steps=100,
         )
         storage.save_episode_config(episode_config)
 
-        ep_dir = Path(tmp_dir) / "episodes" / "test_task_ep0"
+        ep_dir = Path(tmp_dir) / "episodes" / f"{mock_cube_task_config.task_id}_ep0"
         assert ep_dir.exists()
 
-    def test_save_episode_config_creates_file(self, tmp_dir, mock_agent_config, mock_tool_config):
+    def test_save_episode_config_creates_file(self, tmp_dir, mock_agent_config, mock_cube_task_config):
         from cube_harness.episode import EpisodeConfig
 
         storage = FileStorage(tmp_dir)
         episode_config = EpisodeConfig(
             id=5,
-            task_id="my_task_123",
             agent_config=mock_agent_config,
-            tool_config=mock_tool_config,
+            task_config=mock_cube_task_config,
             exp_name="test_exp",
             output_dir=tmp_dir,
             max_steps=200,
         )
         storage.save_episode_config(episode_config)
 
-        config_path = Path(tmp_dir) / "episodes" / "my_task_123_ep5" / "episode_config.json"
+        config_path = Path(tmp_dir) / "episodes" / f"{mock_cube_task_config.task_id}_ep5" / "episode_config.json"
         assert config_path.exists()
 
-    def test_load_episode_config_roundtrip(self, tmp_dir, mock_agent_config, mock_tool_config):
+    def test_load_episode_config_roundtrip(self, tmp_dir, mock_agent_config, mock_cube_task_config):
         from cube_harness.episode import EpisodeConfig
 
         storage = FileStorage(tmp_dir)
         original_config = EpisodeConfig(
             id=42,
-            task_id="roundtrip_task",
             agent_config=mock_agent_config,
-            tool_config=mock_tool_config,
+            task_config=mock_cube_task_config,
             exp_name="roundtrip_exp",
             output_dir=tmp_dir,
             max_steps=500,
         )
         storage.save_episode_config(original_config)
 
-        config_path = Path(tmp_dir) / "episodes" / "roundtrip_task_ep42" / "episode_config.json"
+        config_path = Path(tmp_dir) / "episodes" / f"{mock_cube_task_config.task_id}_ep42" / "episode_config.json"
         loaded_config = storage.load_episode_config(config_path)
 
         assert loaded_config.id == original_config.id
-        assert loaded_config.task_id == original_config.task_id
+        assert loaded_config.task_config.task_id == original_config.task_config.task_id
         assert loaded_config.exp_name == original_config.exp_name
         assert loaded_config.max_steps == original_config.max_steps
         assert loaded_config.output_dir == original_config.output_dir
         assert loaded_config.agent_config == original_config.agent_config
-        assert loaded_config.tool_config == original_config.tool_config
 
     def test_load_episode_config_not_found(self, tmp_dir):
         storage = FileStorage(tmp_dir)
@@ -447,16 +445,18 @@ class TestFileStorageEpisodeConfig:
         with pytest.raises(FileNotFoundError):
             storage.load_episode_config(config_path)
 
-    def test_list_episode_configs(self, tmp_dir, mock_agent_config, mock_tool_config):
+    def test_list_episode_configs(self, tmp_dir, mock_agent_config):
+        from cube.task import TaskMetadata
+
         from cube_harness.episode import EpisodeConfig
+        from tests.conftest import MockCubeTaskConfig
 
         storage = FileStorage(tmp_dir)
         for i in range(3):
             config = EpisodeConfig(
                 id=i,
-                task_id=f"task_{i}",
                 agent_config=mock_agent_config,
-                tool_config=mock_tool_config,
+                task_config=MockCubeTaskConfig(metadata=TaskMetadata(id=f"task_{i}")),
                 exp_name="test_exp",
                 output_dir=tmp_dir,
                 max_steps=100,
@@ -477,15 +477,17 @@ class TestFileStorageEpisodeConfig:
         config_files = storage.list_episode_configs()
         assert config_files == []
 
-    def test_episode_config_filename_parsing(self, tmp_dir, mock_agent_config, mock_tool_config):
+    def test_episode_config_filename_parsing(self, tmp_dir, mock_agent_config):
+        from cube.task import TaskMetadata
+
         from cube_harness.episode import EpisodeConfig
+        from tests.conftest import MockCubeTaskConfig
 
         storage = FileStorage(tmp_dir)
         config = EpisodeConfig(
             id=10,
-            task_id="task_with_underscores_123",
             agent_config=mock_agent_config,
-            tool_config=mock_tool_config,
+            task_config=MockCubeTaskConfig(metadata=TaskMetadata(id="task_with_underscores_123")),
             exp_name="test_exp",
             output_dir=tmp_dir,
             max_steps=100,
@@ -497,7 +499,7 @@ class TestFileStorageEpisodeConfig:
 
         loaded = storage.load_episode_config(config_path)
         assert loaded.id == 10
-        assert loaded.task_id == "task_with_underscores_123"
+        assert loaded.task_config.task_id == "task_with_underscores_123"
 
 
 class TestFileStorageOverwrite:
@@ -1158,6 +1160,52 @@ class TestEpisodeSummaryStatus:
         assert final.status == EpisodeStatus.FAILED
 
 
+class TestFailureTextInjection:
+    def test_load_all_metadata_injects_failure_text(self, tmp_dir: Path) -> None:
+        """load_all_trajectory_metadata injects _failure_text when failure.txt exists and no end_time."""
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1"})
+        storage.save_trajectory(traj)
+        (storage._episode_dir("task_1_ep0") / "failure.txt").write_text("Ray actor died")
+
+        trajs = storage.load_all_trajectory_metadata()
+        t = next(t for t in trajs if t.id == "task_1_ep0")
+        assert t.metadata.get("_failure_text") == "Ray actor died"
+
+    def test_load_all_metadata_no_injection_when_complete(self, tmp_dir: Path) -> None:
+        """_failure_text is NOT injected when end_time is set (trajectory completed normally)."""
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1"}, end_time=1234567890.0)
+        storage.save_trajectory(traj)
+        (storage._episode_dir("task_1_ep0") / "failure.txt").write_text("stale error")
+
+        trajs = storage.load_all_trajectory_metadata()
+        t = next(t for t in trajs if t.id == "task_1_ep0")
+        assert "_failure_text" not in t.metadata
+
+    def test_load_trajectory_injects_failure_text(self, tmp_dir: Path) -> None:
+        """load_trajectory (full load) also injects _failure_text."""
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1"})
+        storage.save_trajectory(traj)
+        (storage._episode_dir("task_1_ep0") / "failure.txt").write_text("crash trace")
+
+        loaded = storage.load_trajectory("task_1_ep0")
+        assert loaded.metadata.get("_failure_text") == "crash trace"
+
+    def test_list_ids_with_mtime_uses_failure_txt_mtime(self, tmp_dir: Path) -> None:
+        """list_trajectory_ids_with_mtime returns failure.txt mtime when it's newer."""
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1"})
+        storage.save_trajectory(traj)
+        time.sleep(0.01)  # ensure different mtime
+        failure_path = storage._episode_dir("task_1_ep0") / "failure.txt"
+        failure_path.write_text("crash")
+
+        mtimes = storage.list_trajectory_ids_with_mtime()
+        assert mtimes["task_1_ep0"] >= failure_path.stat().st_mtime
+
+
 class TestEpisodeResultAPI:
     def _make_episode(self, tmp_dir, sample_env_output, sample_agent_output):
         from cube_harness.summary import SummaryProcessor
@@ -1307,3 +1355,218 @@ class TestExperimentResultGetRecords:
         episodes = list(result)
         assert len(episodes) == 2
         assert all(isinstance(ep, EpisodeResult) for ep in episodes)
+
+
+class TestEpisodeStatusIO:
+    """Tests for status.json atomic write/read on FileStorage."""
+
+    def test_write_then_read_roundtrip(self, tmp_dir) -> None:
+        from cube_harness.episode_status import EpisodeStatus
+
+        storage = FileStorage(tmp_dir)
+        status = EpisodeStatus(
+            status="COMPLETED",
+            task_id="t1",
+            episode_id=0,
+            started_at=1.0,
+            ended_at=2.0,
+            last_heartbeat_at=2.0,
+            current_step=3,
+            reward=1.0,
+        )
+        storage.write_episode_status("t1_ep0", status)
+
+        loaded = storage.read_episode_status("t1_ep0")
+        assert loaded is not None
+        assert loaded.status == "COMPLETED"
+        assert loaded.task_id == "t1"
+        assert loaded.reward == 1.0
+        assert loaded.current_step == 3
+
+    def test_read_missing_returns_none(self, tmp_dir) -> None:
+        storage = FileStorage(tmp_dir)
+        assert storage.read_episode_status("does_not_exist") is None
+
+    def test_atomic_write_no_partial_file(self, tmp_dir) -> None:
+        """Writing always goes via .tmp + os.replace — a partial status.json is never observed."""
+        from cube_harness.episode_status import STATUS_FILENAME, EpisodeStatus
+
+        storage = FileStorage(tmp_dir)
+        status_path = storage._episode_status_path("t1_ep0")
+
+        status = EpisodeStatus(status="RUNNING", task_id="t1", episode_id=0, started_at=1.0)
+        storage.write_episode_status("t1_ep0", status)
+
+        siblings = list(status_path.parent.iterdir())
+        assert STATUS_FILENAME in [s.name for s in siblings]
+        assert not any(s.name.endswith(".tmp") for s in siblings)
+
+        status.status = "COMPLETED"
+        storage.write_episode_status("t1_ep0", status)
+        assert not any(s.name.endswith(".tmp") for s in status_path.parent.iterdir())
+        loaded = storage.read_episode_status("t1_ep0")
+        assert loaded is not None and loaded.status == "COMPLETED"
+
+    def test_list_episode_statuses(self, tmp_dir) -> None:
+        """list_episode_statuses returns statuses keyed by trajectory_id (skipping dirs without configs)."""
+        from cube_harness.episode_status import EpisodeStatus
+
+        storage = FileStorage(tmp_dir)
+        for tid, st in [("t1_ep0", "COMPLETED"), ("t2_ep0", "FAILED")]:
+            ep_dir = storage._episode_dir(tid)
+            ep_dir.mkdir(parents=True, exist_ok=True)
+            (ep_dir / "episode_config.json").write_text("{}")
+            storage.write_episode_status(
+                tid, EpisodeStatus(status=st, task_id=tid.split("_ep")[0], episode_id=0, started_at=0.0)
+            )
+        statuses = storage.list_episode_statuses()
+        assert set(statuses.keys()) == {"t1_ep0", "t2_ep0"}
+        assert statuses["t1_ep0"].status == "COMPLETED"
+        assert statuses["t2_ep0"].status == "FAILED"
+
+    def test_corrupt_status_returns_none(self, tmp_dir) -> None:
+        """A malformed status.json is treated as missing rather than raising."""
+        from cube_harness.episode_status import STATUS_FILENAME
+
+        storage = FileStorage(tmp_dir)
+        ep_dir = storage._episode_dir("t1_ep0")
+        ep_dir.mkdir(parents=True, exist_ok=True)
+        (ep_dir / STATUS_FILENAME).write_text("not valid json")
+        assert storage.read_episode_status("t1_ep0") is None
+
+    def test_unknown_fields_ignored_for_forward_compat(self, tmp_dir) -> None:
+        """A status.json from a future version with extra fields still loads cleanly."""
+        from cube_harness.episode_status import STATUS_FILENAME
+
+        storage = FileStorage(tmp_dir)
+        ep_dir = storage._episode_dir("t1_ep0")
+        ep_dir.mkdir(parents=True, exist_ok=True)
+        raw = {
+            "status": "COMPLETED",
+            "task_id": "t1",
+            "episode_id": 0,
+            "started_at": 1.0,
+            "ended_at": 2.0,
+            "last_heartbeat_at": 2.0,
+            "current_step": 0,
+            "reward": 1.0,
+            "had_step_errors": False,
+            "error_type": None,
+            "error_message": None,
+            "retry_count": 0,
+            "extra": {},
+            "future_v2_field": "should be ignored",
+            "another_future_field": 42,
+        }
+        (ep_dir / STATUS_FILENAME).write_text(json.dumps(raw))
+        loaded = storage.read_episode_status("t1_ep0")
+        assert loaded is not None
+        assert loaded.status == "COMPLETED"
+        assert loaded.reward == 1.0
+
+    def test_archive_episode_renames_directory(self, tmp_dir: Path) -> None:
+        """archive_episode moves the episode dir to <id>.archived_<ts>/ and makes it invisible to readers."""
+        from cube_harness.episode_status import EpisodeStatus
+
+        storage = FileStorage(tmp_dir)
+        status = EpisodeStatus(status="FAILED", task_id="t1", episode_id=0, started_at=1.0)
+        storage.write_episode_status("t1_ep0", status)
+
+        episodes_dir = tmp_dir / "episodes"
+        assert (episodes_dir / "t1_ep0").exists()
+
+        storage.archive_episode("t1_ep0")
+
+        # Original directory is gone.
+        assert not (episodes_dir / "t1_ep0").exists()
+
+        # An archived copy exists.
+        archived = [d for d in episodes_dir.iterdir() if ".archived_" in d.name]
+        assert len(archived) == 1
+
+        # read_episode_status sees nothing (archived dir is excluded from _episode_dirs).
+        assert storage.read_episode_status("t1_ep0") is None
+
+    def test_archive_episode_noop_when_dir_missing(self, tmp_dir: Path) -> None:
+        """archive_episode on a non-existent trajectory_id does not raise."""
+        storage = FileStorage(tmp_dir)
+        storage.archive_episode("nonexistent_ep0")  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# TestInjectEpisodeStatus
+# ---------------------------------------------------------------------------
+
+
+class TestInjectEpisodeStatus:
+    """FileStorage injects _episode_status (and related fields) from status.json into metadata."""
+
+    def _write_episode(self, storage: FileStorage, traj_id: str, status: str, **kwargs: object) -> None:
+        traj = Trajectory(id=traj_id, metadata={"task_id": "task_1", "agent_name": "test_agent"})
+        storage.save_trajectory(traj)
+        ep_status = EpisodeStatus(
+            status=status,  # type: ignore[arg-type]
+            task_id="task_1",
+            episode_id=0,
+            started_at=1.0,
+            retry_count=kwargs.get("retry_count", 0),
+            error_type=kwargs.get("error_type"),
+            error_message=kwargs.get("error_message"),
+        )
+        storage.write_episode_status(traj_id, ep_status)
+
+    def test_load_all_metadata_injects_episode_status(self, tmp_dir: Path) -> None:
+        storage = FileStorage(tmp_dir)
+        self._write_episode(storage, "task_1_ep0", "COMPLETED")
+        trajs = storage.load_all_trajectory_metadata()
+        t = next(t for t in trajs if t.id == "task_1_ep0")
+        assert t.metadata.get("_episode_status") == "COMPLETED"
+
+    def test_load_trajectory_injects_episode_status(self, tmp_dir: Path) -> None:
+        storage = FileStorage(tmp_dir)
+        self._write_episode(storage, "task_1_ep0", "RUNNING")
+        traj = storage.load_trajectory("task_1_ep0")
+        assert traj.metadata.get("_episode_status") == "RUNNING"
+
+    def test_retry_count_injected(self, tmp_dir: Path) -> None:
+        storage = FileStorage(tmp_dir)
+        self._write_episode(storage, "task_1_ep0", "COMPLETED", retry_count=2)
+        trajs = storage.load_all_trajectory_metadata()
+        t = next(t for t in trajs if t.id == "task_1_ep0")
+        assert t.metadata.get("_retry_count") == 2
+
+    def test_error_fields_injected(self, tmp_dir: Path) -> None:
+        storage = FileStorage(tmp_dir)
+        self._write_episode(
+            storage,
+            "task_1_ep0",
+            "FAILED",
+            error_type="RuntimeError",
+            error_message="OOM on GPU",
+        )
+        trajs = storage.load_all_trajectory_metadata()
+        t = next(t for t in trajs if t.id == "task_1_ep0")
+        assert t.metadata.get("_error_type") == "RuntimeError"
+        assert t.metadata.get("_error_message") == "OOM on GPU"
+
+    def test_no_injection_when_status_json_absent(self, tmp_dir: Path) -> None:
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1"})
+        storage.save_trajectory(traj)
+        trajs = storage.load_all_trajectory_metadata()
+        t = next(t for t in trajs if t.id == "task_1_ep0")
+        assert "_episode_status" not in t.metadata
+
+    def test_episode_status_injected_into_missing_stubs(self, tmp_dir: Path) -> None:
+        """load_missing_trajectory_stubs also injects _episode_status from status.json."""
+        storage = FileStorage(tmp_dir)
+        # Write an episode_config.json but no trajectory (simulates a queued-but-unstarted episode).
+        ep_dir = tmp_dir / "episodes" / "task_1_ep0"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "episode_config.json").write_text('{"task_id": "task_1"}')
+        ep_status = EpisodeStatus(status="QUEUED", task_id="task_1", episode_id=0, started_at=1.0)
+        storage.write_episode_status("task_1_ep0", ep_status)
+
+        stubs = storage.load_missing_trajectory_stubs()
+        stub = next(s for s in stubs if s.id == "task_1_ep0")
+        assert stub.metadata.get("_episode_status") == "QUEUED"

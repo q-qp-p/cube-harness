@@ -34,6 +34,22 @@ Targeted LLM guidance when the scaffolding is fine but the model needs a nudge. 
 - `GennyConfig.hint` — subset-wide
 - `system_prompt` change — only if the issue is truly general
 
+**Hint storage convention:** hints and clarifications are separate JSON files, each a flat `{"task_id": "text"}` object. Load them with helpers from the `hints` package (on `sys.path` when `meta_agent/` is in `sys.path`):
+
+```python
+from hints import load_hints, load_clarifications
+
+task_hints         = load_hints("swebench-verified")  # → GennyConfig.task_hints
+task_hints         = load_hints("workarena")
+task_clarification = load_clarifications("workarena")  # → GennyConfig.task_clarification
+```
+
+Files:
+- `meta_agent/hints/<benchmark>.json` — task-specific hints (injected as `## Task Hint`)
+- `meta_agent/clarifications/<benchmark>.json` — task clarifications (injected as `## Additional task details`)
+
+To add a hint: edit the relevant JSON file directly — no Python file to update.
+
 **5. Harness improvements**
 Improve how the harness stores, represents, or exposes information. Better telemetry, faster trace loading, richer step summaries — anything that makes debugging faster or cheaper.
 
@@ -45,6 +61,8 @@ Token cost, wall-clock time, parallelism, benchmark setup overhead. Worth fixing
 ## Debugging Strategy
 
 **Pick tasks that fail but should succeed.** Avoid tasks with fundamental ambiguity or that require capabilities the agent fundamentally lacks. A task that sometimes passes is a better target than one that never passes.
+
+**Start cheap, scale up.** Prefer short tasks (few steps, fast setup) when selecting what to run first — they give signal faster and cost less. Once a cheap task stops yielding new information, move to harder ones. Stop adding tasks when the marginal diagnostic value no longer justifies the cost.
 
 **Use causal interventions, not hunches.** Before writing a fix, write a minimal intervention (a hint, a one-line code change, a different prompt) that would confirm your hypothesis. If the intervention works → root cause confirmed → write the real fix. If not → revise the hypothesis.
 
@@ -61,13 +79,15 @@ Token cost, wall-clock time, parallelism, benchmark setup overhead. Worth fixing
 
 Temporary hacks (e.g. a blunt hint that masks a tool bug) are only acceptable as a diagnostic step to confirm a hypothesis. They must not be committed as the final fix.
 
+**When fixing a bug, write a unit test first if practical.** A test that fails on the buggy code and passes after the fix documents the root cause and guards against regression. Skip when it's too slow, too costly, too stochastic, or genuinely hard to isolate in a unit test — but default to trying.
+
 ---
 
 ## Entry Point
 
 ```bash
-uv run recipes/meta_agent_recipe.py debug   # 2 tasks, sequential
-uv run recipes/meta_agent_recipe.py         # full subset run
+uv run recipes/meta_agent_web_recipe.py debug   # 2 tasks, sequential
+uv run recipes/meta_agent_web_recipe.py         # full subset run
 ```
 
 Edit `task_ids` in the recipe to focus on failing tasks. Edit `GennyConfig.task_hints` / `hint` to add hints.
@@ -83,14 +103,27 @@ Empty list = all 125 tasks. List all IDs: `MiniWobBenchmark.task_metadata.keys()
 
 ## Reading Traces
 
-**Fast overview:**
+**Step 1 — compact CLI overview** (start here):
+```bash
+ch-trace <episode_dir>
+# e.g. ch-trace ~/cube_harness_results/.../episodes/workarena.servicenow.create-incident_ep0
+
+# Also dump eval fields from the last environment step:
+ch-trace <episode_dir> --eval
+```
+Two lines per turn: action + result on line 1, context + reward on line 2. For browser tasks
+the context is the page title; for coding/terminal tasks it's the first non-empty line of the
+tool result (e.g. a pytest summary line). `--eval` additionally prints eval fields from the
+last environment step — useful for test-based benchmarks.
+
+**Step 2 — experiment-level summary:**
 ```python
 from cube_harness.results import ExperimentResult
 for record in ExperimentResult("/path/to/output_dir").get_records():
     print(record.task_id, record.reward, record.n_turns, record.cost_usd)
 ```
 
-**What the agent actually saw** — the most important diagnostic. Read the full LLM prompt from the stored `act` step:
+**Step 3 — what the agent actually saw** — the most important diagnostic. Read the full LLM prompt from the stored `act` step:
 ```python
 from pathlib import Path
 from cube_harness.results import EpisodeResult
@@ -149,7 +182,12 @@ Key `GennyConfig` levers: `render_last_n_obs`, `max_obs_chars`, `enable_summariz
 
 - Scaffolding changes → `feat/meta-agent`
 - Each fix → `feat/meta-agent/iter-N-<description>` → PR against `feat/meta-agent`
-- Log every iteration in `meta_agent_log.md`:
+
+**Experiment journal** — `experiments/meta_agent_log.md` in the repo, committed to `feat/meta-agent`.
+This is shared state: it tracks *why* each fix was made, which is as important as the fix itself.
+Raw results dirs (`~/cube_harness_results/`) stay local (too large, machine-specific).
+
+Append one entry per iteration when committing the fix PR:
 
 ```markdown
 ## Iteration N — YYYY-MM-DD
@@ -168,9 +206,14 @@ Key `GennyConfig` levers: `render_last_n_obs`, `max_obs_chars`, `enable_summariz
 
 | | |
 |---|---|
-| Recipe | `recipes/meta_agent_recipe.py` |
+| Recipe | `recipes/meta_agent_web_recipe.py` |
+| SWE recipe | `recipes/swe_agent_recipe.py` |
+| Hints | `meta_agent/hints/<benchmark>.json` + `load_hints(benchmark)` |
+| Clarifications | `meta_agent/clarifications/<benchmark>.json` + `load_clarifications(benchmark)` |
+| Journal | `experiments/meta_agent_log.md` |
 | Genny | `src/cube_harness/agents/genny.py` |
 | Results API | `src/cube_harness/results.py` |
 | Results root | `~/cube_harness_results/` |
-| XRay | `make xray` |
+| Trace CLI | `ch-trace <episode_dir>` (compact per-turn viewer) |
+| XRay | `make xray` (visual, screenshots) |
 | Tests / Lint | `make test` / `make lint` |

@@ -1,4 +1,4 @@
-"""OSWorld eval on Azure — Genny agent with GPT-5 and accessibility tree observations.
+"""OSWorld eval on Azure — Genny agent with GPT-5-mini and accessibility tree observations.
 
 Uses AzureInfraConfig to launch fresh VMs per task. Mirrors the non-Azure
 OSWorld recipe configuration while using Azure-backed VM provisioning.
@@ -17,12 +17,10 @@ Usage:
 import logging
 import os
 import sys
-from pathlib import Path
 
-import osworld_cube
 from cube_infra_azure import AzureInfraConfig
 from dotenv import load_dotenv
-from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTestSet
+from osworld_cube.benchmark import OSWorldBenchmarkConfig
 from osworld_cube.computer import ComputerConfig
 
 from cube_harness import make_experiment_output_dir
@@ -42,7 +40,7 @@ INFRA = AzureInfraConfig(
     storage_account=os.environ.get("AZURE_STORAGE_ACCOUNT") or "cubeexpvhd",
     vnet_name="vnet-westus2",
     nsg_name="osworld-nsg",
-    image_name_suffix="-aj",
+    image_name_suffix="-generalized",
 )
 
 OSWORLD_SYSTEM_PROMPT_PYAUTOGUI_AXTREE = """\
@@ -101,32 +99,26 @@ def main(debug: bool) -> None:
         observe_after_action=True,
     )
 
-    tasks_file = str(Path(osworld_cube.__file__).parent / "debug_tasks.json") if debug else None
-    benchmark = OSWorldBenchmark(
-        default_tool_config=tool_config,
+    benchmark_config = OSWorldBenchmarkConfig(
+        tool_config=tool_config,
         use_som=False,
-        tasks_file=tasks_file,
-        test_set_name=OSWorldTestSet.TEST_SMALL,
-        infra=INFRA,
     )
-    benchmark.setup()
-
-    # Provision all resources the benchmark needs (idempotent — no-ops if already ready).
-    for resource in benchmark.resources:
-        INFRA.provision(resource)
+    OSWorldBenchmarkConfig.install()
+    benchmark_config = benchmark_config.named_subset("test_small")
 
     exp = Experiment(
         name="osworld_azure_gpt5_mini",
         output_dir=output_dir,
         agent_config=agent_config,
-        benchmark=benchmark,
+        benchmark_config=benchmark_config,
+        infra=INFRA,
         max_steps=15,
     )
 
     try:
         if debug:
             print("\n" + "=" * 60)
-            print("DEBUG MODE: Running debug_tasks.json sequentially on Azure")
+            print("DEBUG MODE: Running test_small sequentially on Azure")
             print("=" * 60)
             print(f"Output directory: {output_dir}")
             print(f"Model: {llm_config.model_name}")

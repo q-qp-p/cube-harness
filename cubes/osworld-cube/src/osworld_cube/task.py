@@ -1,12 +1,13 @@
 """
 OSWorldTask — CUBE task for a single OSWorld desktop-automation episode.
 
-    task = OSWorldTask(metadata=..., tool_config=ComputerConfig(...), infra=AWSInfraConfig(...))
+    config = OSWorldBenchmarkConfig(tool_config=ComputerConfig(...))
+    benchmark = config.make(infra=AWSInfraConfig(...))
+    task = next(config.get_task_configs()).make(
+        runtime_context=benchmark._runtime_context,
+    )
     obs, info = task.reset()
-    while not done:
-        action = agent(obs, task.action_set)
-        env_out = task.step(action)
-        obs, done = env_out.obs, env_out.done
+    ...
     task.close()
 """
 
@@ -24,8 +25,8 @@ from pydantic import PrivateAttr
 
 from cube.benchmark import RuntimeContext  # noqa: F401 — triggers OSWorldTask.model_rebuild()
 from cube.core import Observation
+from cube.task import Task, TaskExecutionInfo, TaskMetadata
 from cube.resource import InfraConfig, ResourceHandle, VMResourceConfig
-from cube.task import Task
 
 from cube_computer_tool.axtree import linearize_accessibility_tree, tag_screenshot
 
@@ -50,7 +51,37 @@ _VLC_PORT = 8080
 _SERVER_PORT = 5000
 
 
-class OSWorldTask(Task):
+class OSWorldTaskMetadata(TaskMetadata):
+    """TaskMetadata subclass for OSWorld tasks.
+
+    Public fields shipped in task_metadata.json (available at import time).
+    Heavy execution data (config, evaluator) lives on ``OSWorldExecutionInfo``
+    and is loaded lazily by ``OSWorldTaskConfig.make()``.
+    """
+
+    domain: str  # Desktop domain, e.g. 'chrome', 'os', 'libreoffice_calc'.
+    test_sets: list[str]  # OSWorld test sets this task belongs to, e.g. ['test_all', 'test_small'].
+    instruction: str  # Full agent-facing task instruction.
+    snapshot: str  # VM snapshot name to restore before the task starts.
+    os_type: str  # Guest OS type used for accessibility-tree linearisation ('ubuntu' or 'windows').
+    related_apps: list[str]  # Applications involved in the task, e.g. ['chrome', 'libreoffice_calc'].
+
+
+class OSWorldExecutionInfo(TaskExecutionInfo):
+    """Heavy per-task execution data for OSWorld tasks — populated on the worker.
+
+    Loaded by ``OSWorldTaskConfig.make()`` from the per-task execution cache
+    written by ``OSWorldBenchmarkConfig.install()``.
+    """
+
+    config: list[dict] = []
+    """Setup scripts to run before the task starts (paths fixed to absolute at install time)."""
+
+    evaluator: dict = {}
+    """Evaluator function + expected results."""
+
+
+class OSWorldTask(Task[OSWorldTaskMetadata]):
     """
     A single OSWorld desktop-automation task running inside a VM.
 
@@ -60,30 +91,14 @@ class OSWorldTask(Task):
 
     Reference: https://github.com/xlang-ai/OSWorld
 
-    Pydantic fields (all inherited from cube.task.Task except use_som, infra):
-        metadata:      TaskMetadata  — required; OSWorld-specific fields go in
-                                       metadata.extra_info (see below)
-        tool_config:   ToolConfig    — required; pass ComputerConfig(...)
-        infra:         InfraConfig | None — InfraConfig (AWSInfraConfig,
-                                       AzureInfraConfig, LocalInfraConfig, ...).
-                                       Each task gets a fresh VM launched from the
-                                       provisioned image.
-        validate_per_step: bool      — inherited; default False
-        accept_agent_stop: bool      — inherited; default True
+    Heavy per-task execution data (setup config, evaluator) is on
+    ``self.execution_info`` (an ``OSWorldExecutionInfo``); read it via
+    ``self.execution_info.config`` / ``self.execution_info.evaluator``.
 
-    Fields stored in metadata.extra_info:
-        domain        (str)   — e.g. "chrome", "os", "libreoffice"
-        config        (list)  — setup scripts to run before task starts
-        evaluator     (dict)  — evaluation function + expected results
-        related_apps  (list)  — applications involved in the task
-
-    Task instruction:
-        metadata.abstract_description  — used as the agent's goal text
+    Infra flows in via ``self.runtime_context["infra"]`` — published by
+    ``OSWorldBenchmark._setup()``. Each task gets a fresh VM via
+    ``infra.launch(OSWORLD_UBUNTU_RESOURCE)``.
     """
-
-    infra: InfraConfig | None = None
-    """InfraConfig (AWSInfraConfig, AzureInfraConfig, LocalInfraConfig).
-    Each task gets a fresh VM launched from the provisioned image via infra.launch()."""
 
     use_som: bool = False
     """If True, annotate screenshot with numbered bounding boxes (Set-of-Marks)
@@ -100,19 +115,34 @@ class OSWorldTask(Task):
         """Return self.tool cast to ComputerBase for type-checker satisfaction."""
         return self.tool  # type: ignore[return-value]
 
-    def _os_type(self) -> str:
-        """Return the OS type string ('ubuntu' or 'windows') for axtree processing."""
-        raw = self.metadata.extra_info.get("os_type", "Ubuntu")
-        return raw.lower()
+    @property
+    def _exec(self) -> OSWorldExecutionInfo:
+        """Typed view on execution_info — fails fast if it was not populated."""
+        if self.execution_info is None:
+            raise RuntimeError(
+                f"OSWorldTask {self.metadata.id!r}: execution_info is not populated. "
+                f"Construct via OSWorldTaskConfig.make() (which loads it from the per-task cache)."
+            )
+        if not isinstance(self.execution_info, OSWorldExecutionInfo):
+            raise RuntimeError(
+                f"OSWorldTask {self.metadata.id!r}: execution_info is "
+                f"{type(self.execution_info).__name__}, expected OSWorldExecutionInfo."
+            )
+        return self.execution_info
 
     def _ensure_vm(self) -> None:
         """Launch the VM if not already running via infra.launch()."""
         if self._handle is not None:
             return
-        if self.infra is None:
-            raise RuntimeError("OSWorldTask requires an InfraConfig — set infra= when constructing.")
-        logger.info("Launching VM via %s", type(self.infra).__name__)
-        self._handle = self.infra.launch(OSWORLD_UBUNTU_RESOURCE)
+        infra = (self.runtime_context or {}).get("infra")
+        if not isinstance(infra, InfraConfig):
+            raise RuntimeError(
+                "OSWorldTask requires an InfraConfig in runtime_context — "
+                "construct via OSWorldBenchmarkConfig.make(infra=<InfraConfig>) so the runtime "
+                "publishes infra into runtime_context['infra']."
+            )
+        logger.info("Launching VM via %s", type(infra).__name__)
+        self._handle = infra.launch(OSWORLD_UBUNTU_RESOURCE)
         logger.info("VM ready (run_id=%s)", self._handle.run_id[:8])
         self._computer.attach_endpoint(self._handle.endpoint)
 
@@ -176,7 +206,7 @@ class OSWorldTask(Task):
         )
         eval_config = {
             "id": self.metadata.id,
-            "evaluator": self.metadata.extra_info.get("evaluator", {}),
+            "evaluator": self._exec.evaluator,
         }
         try:
             reward = evaluator.evaluate(eval_config, self._computer._action_history)
@@ -191,50 +221,48 @@ class OSWorldTask(Task):
         Launch the VM (if needed), run setup scripts, and return the initial obs.
 
         Steps:
-          1. Launch VM if not yet running (via infra)
-          2. Build task_data dict from metadata.extra_info
+          1. Launch VM if not yet running (via infra from runtime_context)
+          2. Build task_data dict from metadata + execution_info
           3. Run setup scripts, wait for VM to stabilise
           4. Post-process the observation (SoM or linearize)
           5. Prepend task instruction as text observation
           6. Return (obs, info)
         """
         self._ensure_vm()
-        self._computer.reset()
-        extra = self.metadata.extra_info
-
+        self.tool.reset()
         task_data = {
             "id": self.metadata.id,
-            "instruction": self.metadata.abstract_description,
-            "config": extra.get("config", []),
-            "evaluator": extra.get("evaluator", {}),
-            "snapshot": extra.get("snapshot", "init_state"),
-            "related_apps": extra.get("related_apps", []),
+            "instruction": self.metadata.instruction,
+            "config": self._exec.config,
+            "evaluator": self._exec.evaluator,
+            "snapshot": self.metadata.snapshot,
+            "related_apps": self.metadata.related_apps,
         }
 
-        logger.info("Resetting OSWorldTask %s (domain=%s)", self.metadata.id, extra.get("domain", "unknown"))
+        logger.info("Resetting OSWorldTask %s (domain=%s)", self.metadata.id, self.metadata.domain)
 
         obs = self._setup_task(task_data)
         obs = self.obs_postprocess(obs)
 
-        goal_obs = Observation.from_text(f"Task: {self.metadata.abstract_description}")
+        goal_obs = Observation.from_text(f"Task: {self.metadata.instruction}")
         obs = goal_obs + obs
 
         info = {
             "task_id": self.metadata.id,
-            "task_domain": extra.get("domain", "unknown"),
-            "task_snapshot": extra.get("snapshot", "init_state"),
-            "task_related_apps": extra.get("related_apps", []),
+            "task_domain": self.metadata.domain,
+            "task_snapshot": self.metadata.snapshot,
+            "task_related_apps": self.metadata.related_apps,
         }
         return obs, info
 
-    def evaluate(self, obs: Observation) -> tuple[float, dict]:
+    def evaluate(self, obs: Observation | None = None) -> tuple[float, dict]:
         """
         Call the task evaluator and return (reward, info).
 
         reward ∈ [0.0, 1.0]:  1.0 = task fully completed.
         Partial credit is preserved (not rounded to binary).
         """
-        evaluator_cfg = self.metadata.extra_info.get("evaluator", {})
+        evaluator_cfg = self._exec.evaluator
 
         if not evaluator_cfg:
             logger.warning("Task %s: no evaluator configured, returning 0.0", self.metadata.id)
@@ -250,7 +278,7 @@ class OSWorldTask(Task):
             "expected": evaluator_cfg.get("expected", {}),
         }
 
-    def finished(self, obs: Observation) -> bool:
+    def finished(self, obs: Observation | None = None) -> bool:
         """Return True if the task has reached a terminal state (done() or fail() called)."""
         return self._computer._is_done
 
@@ -262,7 +290,7 @@ class OSWorldTask(Task):
 
     def _postprocess_linearize(self, obs: Observation) -> Observation:
         """Replace raw axtree XML with a linearized tab-separated table."""
-        platform = self._os_type()
+        platform = self.metadata.os_type.lower()
         new_contents = []
         for content in obs.contents:
             if content.name == "accessibility_tree":
@@ -282,8 +310,7 @@ class OSWorldTask(Task):
         Falls back to _postprocess_linearize if screenshot or axtree are missing,
         or if the annotation fails.
         """
-        platform = self._os_type()
-
+        platform = self.metadata.os_type.lower()
         screenshot_content = None
         axtree_content = None
         for content in obs.contents:
