@@ -11,8 +11,13 @@ Classes:
     UsageSummary      — aggregated LLM token/cost stats across an episode
     AgentInfo         — agent descriptor: config, dependency versions, git provenance
     BenchmarkSubset   — benchmark subset descriptor for MNAR propensity correction
-    JudgeConfig       — configuration of the judge LLM (optional)
-    JudgeOutput       — per-episode judge assessment (optional)
+    InvestigatorLLMConfig       — configuration of the investigator LLM (optional)
+    BlameCategory     — closed-world taxonomy of failure causes
+    Outcome           — outcome of the episode as investigated
+    EvidenceItem      — step-indexed transcript quote backing a blame attribution
+    BaseFindings   — per-episode investigator assessment, base shape (recipes extend it)
+    Findings       — deprecated alias for BaseFindings
+    InvestigationMetadata     — billing/provenance for a single investigator invocation (optional)
     Verifier          — task verifier reference (optional)
     ExperimentRecord  — experiment-level record written to experiment_record.json
     EpisodeRecord     — episode-level record written after each episode completes
@@ -25,33 +30,135 @@ import json
 import logging
 import re
 import subprocess
+import sys
 import time
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import cube
 from cube.benchmark import BenchmarkConfig
 from cube.core import TypedBaseModel
 from pydantic import Field
 
-from cube_harness.core import Trajectory
+from cube_harness.storage import ARCHIVED_MARKER as _ARCHIVED_MARKER
 from cube_harness.storage import EPISODES_DIR as _EPISODES_DIR
+
+if TYPE_CHECKING:
+    from cube_harness.storage import TrajectoryView
 
 logger = logging.getLogger(__name__)
 
 EPISODE_RECORD_FILENAME = "episode_record.json"
 EXPERIMENT_RECORD_FILENAME = "experiment_record.json"
 
-_TRACKED_PACKAGES: list[str] = [
-    "cube-harness",
-    "cube",
-    "litellm",
-    "anthropic",
-    "openai",
-    "browsergym-core",
-    "playwright",
-    "pydantic",
-    "ray",
-]
+# Distributions that are always recorded when present, even if the sys.modules
+# walk in _imported_distributions() misses them. The walker is the primary
+# capture mechanism — this list is a small backstop for the harness invariants
+# every run must surface.
+# The installed distribution name for cube-standard is "cube-standard", NOT
+# "cube" (the import is `import cube` but `importlib.metadata.version("cube")`
+# raises PackageNotFoundError). Using the wrong name silently dropped
+# cube-standard from every recorded `dependency_versions` — direct PS-001
+# violation, since cube-standard's contracts are the most consequential
+# dependency in the whole system.
+_ALWAYS_INCLUDE_DEPENDENCIES: frozenset[str] = frozenset({"cube-harness", "cube-standard"})
+
+# Distributions whose version drift is most likely to swing scores — surfaced
+# prominently by downstream UIs (journal, EEE) instead of being buried in the
+# full list. Subset of what gets recorded; never used for filtering.
+_PRIMARY_DEPENDENCIES: frozenset[str] = frozenset(
+    {
+        # Core (note: distribution is "cube-standard", not "cube" — see
+        # _ALWAYS_INCLUDE_DEPENDENCIES above).
+        "cube-harness",
+        "cube-standard",
+        "pydantic",
+        # LLM gateway + provider SDKs — silent retry/streaming changes here
+        # swing benchmark scores even at fixed prompts.
+        "litellm",
+        "openai",
+        "anthropic",
+        # HTTP stack — version drift in retry/timeout/connection-pool behavior
+        # changes LLM-call success rates under flaky upstreams (well-documented
+        # in cube-harness's own session notes, e.g. tbench2-daytona-r0).
+        "httpx",
+        "urllib3",
+        "tenacity",
+        # Tokenization (affects context-window decisions, sometimes scoring).
+        "tiktoken",
+        "tokenizers",
+        # Env runtimes — these only land in primary for the cubes that
+        # actually import them (set intersection with the recorded versions),
+        # so no false positives for non-browser/non-gym runs.
+        "playwright",
+        "browsergym-core",
+        "gymnasium",
+    }
+)
+
+# Behaviorally-inert plumbing imported by ~half the Python ecosystem. Dropped
+# from the dep capture so the recorded set stays roughly 45 packages instead
+# of 80 — and so manual readers can find the deps that actually matter. Each
+# category-comment justifies why dropping is safe; revisit if a future
+# reproducibility failure points back at one of these.
+#
+# Public alias `AUTO_DROP_DEPENDENCIES` is exported below so cube authors can
+# guard their critical deps in a smoke test, e.g.:
+#
+#     from cube_harness.eval_log import AUTO_DROP_DEPENDENCIES
+#     assert "filelock" not in AUTO_DROP_DEPENDENCIES, "my cube needs filelock"
+#
+_AUTO_DROP_DEPENDENCIES: frozenset[str] = frozenset(
+    {
+        # typing & data-structure helpers — API stable, no runtime behavior
+        "annotated-types",
+        "attrs",
+        "frozenlist",
+        "multidict",
+        "propcache",
+        "rpds-py",
+        "typing_extensions",
+        "typing-inspection",
+        # terminal display only — irrelevant to recorded scores
+        "rich",
+        "Pygments",
+        "termcolor",
+        "MarkupSafe",
+        "click",
+        "tqdm",
+        # encoding / file plumbing — deterministic, version-stable
+        "certifi",
+        "charset-normalizer",
+        "idna",
+        "brotli",
+        "zstandard",
+        "zipp",
+        "filelock",
+        "distro",
+        # tiny utilities, no behavioral surface
+        "aiohappyeyeballs",
+        "aiosignal",
+        "sniffio",
+        "importlib_metadata",
+        "packaging",
+        # identity / parsing helpers
+        "pyparsing",
+        "docstring_parser",
+        "fastuuid",
+        "yarl",
+        "Farama-Notifications",
+        # duplicates a primary signal / no critical-path use
+        "pydantic_core",
+        "msgpack",
+        "python-dotenv",
+    }
+)
+
+# Public alias for cube-author introspection. Keep the underscore-prefixed
+# name as the load-bearing identifier inside this module (every existing
+# call site uses it); the public name is a thin re-export.
+AUTO_DROP_DEPENDENCIES = _AUTO_DROP_DEPENDENCIES
 
 
 # ---------------------------------------------------------------------------
@@ -66,9 +173,43 @@ def _get_package_version(name: str) -> str | None:
         return None
 
 
-def _collect_dependency_versions() -> dict[str, str]:
-    """Return installed versions for all tracked packages that are present."""
-    return {pkg: v for pkg in _TRACKED_PACKAGES if (v := _get_package_version(pkg)) is not None}
+def _imported_distributions() -> set[str]:
+    """Distributions whose top-level module is currently in ``sys.modules``.
+
+    The idea: a package whose code was never imported into the experiment's
+    process cannot have affected the recorded score, so it's not worth
+    capturing. The dep capture happens at ``Experiment.save_config()`` time,
+    *after* the recipe has imported its agent / benchmark / tools at module
+    level — so the typical set is ~80 distributions.
+
+    Returns an empty set on any introspection failure rather than raising —
+    losing the dep capture is non-fatal.
+    """
+    try:
+        top_level = {name.split(".", 1)[0] for name in sys.modules if not name.startswith("_")}
+        pkg_to_dist = importlib.metadata.packages_distributions()
+        return {dist for mod in top_level for dist in pkg_to_dist.get(mod, [])}
+    except Exception:
+        return set()
+
+
+def _collect_dependency_versions() -> tuple[dict[str, str], list[str]]:
+    """Return ``(versions, primary_names)`` for the currently-loaded distributions.
+
+    ``versions``: imported distributions (from :func:`_imported_distributions`)
+    plus the always-include backstop, minus the auto-drop list. Sorted by name
+    for stable JSON.
+
+    ``primary_names``: subset present in :data:`_PRIMARY_DEPENDENCIES` — the
+    version-drift hotspots UIs render prominently.
+    """
+    candidates = (_imported_distributions() | _ALWAYS_INCLUDE_DEPENDENCIES) - _AUTO_DROP_DEPENDENCIES
+    versions: dict[str, str] = {}
+    for name in sorted(candidates):
+        if (v := _get_package_version(name)) is not None:
+            versions[name] = v
+    primary = sorted(set(versions) & _PRIMARY_DEPENDENCIES)
+    return versions, primary
 
 
 def _to_github_url(remote_url: str, commit: str) -> str | None:
@@ -144,14 +285,6 @@ def _extract_tool_names(tools: list[dict]) -> list[str]:
     return names
 
 
-def _extract_error_type(trajectory: Trajectory) -> str | None:
-    """Return the error_type of the first StepError in the trajectory, or None."""
-    for step in trajectory.steps:
-        if hasattr(step.output, "error") and step.output.error is not None:
-            return step.output.error.error_type
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Public models
 # ---------------------------------------------------------------------------
@@ -207,7 +340,25 @@ class AgentInfo(TypedBaseModel):
     framework_version: str = Field(description="cube-harness version at eval time.")
     dependency_versions: dict[str, str] = Field(
         default_factory=dict,
-        description="Installed versions of tracked packages (cube-harness, litellm, anthropic, openai, ...).",
+        description=(
+            "Installed versions of every distribution imported into the experiment's process "
+            "at eval time, minus a curated drop-list of behaviorally-inert plumbing. "
+            "Captured at ExperimentRecord build time (Experiment.save_config), which runs "
+            "BEFORE any episode — so distributions only imported lazily during run-time "
+            "(e.g. `import torch` inside a tool's execute()) won't be in sys.modules yet "
+            "and are silently missed. Cube authors who rely on lazy imports should either "
+            "promote them to module-level or add the distribution to "
+            "_ALWAYS_INCLUDE_DEPENDENCIES in cube_harness.eval_log. See _AUTO_DROP_DEPENDENCIES "
+            "+ _PRIMARY_DEPENDENCIES in the same module for the curated allow/deny lists."
+        ),
+    )
+    primary_dependencies: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Subset of dependency_versions whose version drift most directly affects scores "
+            "(LLM gateway + provider SDKs, tokenizers, env runtimes, schema validation). Surfaced "
+            "prominently by downstream UIs; the full set stays in dependency_versions."
+        ),
     )
     git_commit: str | None = Field(default=None, description="Git SHA-1 of the repo HEAD at eval time.")
     git_remote_url: str | None = Field(
@@ -220,6 +371,18 @@ class AgentInfo(TypedBaseModel):
             "True when uncommitted changes exist at eval time — result may not reproduce exactly "
             "from git_commit alone. None when git info is unavailable."
         ),
+    )
+    cube_standard_git_commit: str | None = Field(
+        default=None,
+        description=(
+            "Git SHA-1 of the installed cube-standard (`cube`) package's repo HEAD. Populated only "
+            "when cube-standard is an editable/source checkout (the common case while it tracks an "
+            "unreleased branch); None for a released wheel — use dependency_versions['cube-standard'] then."
+        ),
+    )
+    cube_standard_git_is_dirty: bool | None = Field(
+        default=None,
+        description="True when the cube-standard checkout had uncommitted changes. None when unavailable.",
     )
     description: str | None = Field(
         default=None,
@@ -244,6 +407,14 @@ class AgentInfo(TypedBaseModel):
         config_type = config_dict.get("_type", type(agent_config).__name__)
         llm_model = _extract_llm_model(config_dict)
         git_commit, git_remote_url, git_is_dirty = _get_git_info(cwd=git_cwd)
+        # cube-standard is a separate repo; capturing its hash matters because it is
+        # frequently run from an unreleased branch (dependency_versions only has the
+        # PyPI version string). Probe the installed `cube` package's source dir —
+        # yields a commit only for an editable/source checkout, None for a wheel.
+        cube_standard_dir = str(Path(cube.__file__).resolve().parent)
+        cube_standard_git_commit, _, cube_standard_git_is_dirty = _get_git_info(cwd=cube_standard_dir)
+
+        dependency_versions, primary_dependencies = _collect_dependency_versions()
 
         return cls(
             agent_id=agent_id,
@@ -251,50 +422,177 @@ class AgentInfo(TypedBaseModel):
             config=config_dict,
             llm_model=llm_model,
             framework_version=harness_version,
-            dependency_versions=_collect_dependency_versions(),
+            dependency_versions=dependency_versions,
+            primary_dependencies=primary_dependencies,
             git_commit=git_commit,
             git_remote_url=git_remote_url,
             git_is_dirty=git_is_dirty,
+            cube_standard_git_commit=cube_standard_git_commit,
+            cube_standard_git_is_dirty=cube_standard_git_is_dirty,
         )
 
 
 class BenchmarkSubset(TypedBaseModel):
     """Benchmark subset descriptor for MNAR propensity correction.
 
-    Automatically derived from the benchmark object. The name field captures any subset
-    suffix applied via subset_from_glob (e.g., "[level=l1]") or subset_from_list.
-    n_tasks is the denominator for computing completion rate without requiring the benchmark.
+    Automatically derived from the benchmark config. ``n_tasks`` is the size of the
+    selected view (the denominator for completion rate). The descriptor routes the
+    journal-eligibility scan to one of three outcomes:
+
+    * Full benchmark — ``task_ids`` None → submittable.
+    * Registered named subset — when the config was built via ``named_subset(name)``
+      (carried on ``BenchmarkConfig.subset_name``), ``filter`` holds the subset key and
+      ``task_ids`` stays None, so a complete run is submittable.
+    * Ad-hoc subset (``subset_from_list`` / unregistered glob) — ``task_ids`` records the
+      explicit list, which the scan flags as subset_review.
     """
 
-    name: str = Field(description="Benchmark name including any subset suffix (benchmark_metadata.name).")
-    n_tasks: int = Field(description="Total tasks in this subset — denominator for completion rate.")
+    name: str = Field(description="Benchmark name including any subset suffix, e.g. 'swebench-live-cube[lite-gold]'.")
+    n_tasks: int = Field(description="Tasks in this subset (the selected view) — denominator for completion rate.")
     filter: str | None = Field(
         default=None,
-        description="Glob expression if the subset was created via subset_from_glob.",
+        description="Registered named_subsets key (BenchmarkConfig.subset_name) for an official subset; None otherwise.",
+    )
+    task_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Explicit task list for an ad-hoc subset (subset_from_list, or a glob that isn't a "
+            "registered named subset). Hand-picked subsets aren't reproducibility reference points, "
+            "so the journal-eligibility scan flags them as subset_review. None for a registered named "
+            "subset or the full benchmark."
+        ),
     )
 
     @classmethod
     def from_benchmark_config(cls, benchmark_config: BenchmarkConfig) -> "BenchmarkSubset":
-        """Derive BenchmarkSubset from a cube BenchmarkConfig object."""
-        name = benchmark_config.benchmark_metadata.name
-        n_tasks = len(benchmark_config.task_metadata)
-        return cls(name=name, n_tasks=n_tasks)
+        """Derive BenchmarkSubset from a cube BenchmarkConfig object.
+
+        ``n_tasks`` comes from ``num_tasks`` (the selected view), not the full class-level
+        registry, so a subset run records its real denominator. A config built via
+        ``named_subset(name)`` carries the registered key on ``subset_name``; it is recorded
+        via ``filter`` (→ submittable when complete). Any other subset records its
+        ``task_ids`` (→ subset_review). ``getattr`` guards against a cube-standard predating
+        the ``subset_name`` field (then it degrades to the ad-hoc path).
+        """
+        base_name = benchmark_config.benchmark_metadata.name
+        n_tasks = benchmark_config.num_tasks
+        subset_name = getattr(benchmark_config, "subset_name", None)
+        if subset_name is not None:
+            return cls(name=f"{base_name}[{subset_name}]", n_tasks=n_tasks, filter=subset_name)
+        return cls(name=base_name, n_tasks=n_tasks, task_ids=benchmark_config.task_ids)
 
 
-class JudgeConfig(TypedBaseModel):
-    """Configuration of the LLM judge used for post-hoc episode assessment."""
+class InvestigatorLLMConfig(TypedBaseModel):
+    """Configuration of the LLM investigator used for post-hoc episode assessment."""
 
-    model: str = Field(description="Judge model identifier (e.g. 'claude-opus-4-7').")
-    prompt_version: str = Field(description="Version or hash of the judge prompt template.")
-    judged_at: str | None = Field(default=None, description="ISO-8601 timestamp when judging was run.")
+    model: str = Field(description="Investigator model identifier (e.g. 'claude-opus-4-7').")
+    prompt_version: str = Field(description="Version or hash of the investigator prompt template.")
+    investigated_at: str | None = Field(default=None, description="ISO-8601 timestamp when the investigation was run.")
 
 
-class JudgeOutput(TypedBaseModel):
-    """Per-episode assessment from a post-hoc LLM judge."""
+FINDINGS_SCHEMA_VERSION = "v1"
 
-    difficulty: str | None = Field(default=None, description="Estimated task difficulty (free-form or enum).")
-    feasible: bool | None = Field(default=None, description="Whether the task was deemed completable by the judge.")
-    failure_root_cause: str | None = Field(default=None, description="Short description of why the agent failed.")
+
+class BlameCategory(str, Enum):
+    """Closed-world taxonomy of failure causes. The investigator must pick from this set or `none`."""
+
+    task_unclear = "task_unclear"
+    model_capability = "model_capability"
+    tool_failure = "tool_failure"
+    env_failure = "env_failure"
+    agent_scaffolding = "agent_scaffolding"
+    action_space_limited = "action_space_limited"
+    insufficient_observation = "insufficient_observation"
+    eval_brittle = "eval_brittle"
+    submission_format = "submission_format"
+    none = "none"
+
+
+class Outcome(str, Enum):
+    """What happened in the episode, beyond the binary reward."""
+
+    success = "success"
+    success_lucky = "success_lucky"
+    almost = "almost"
+    failure = "failure"
+    should_have_been_rewarded = "should_have_been_rewarded"
+
+
+class EvidenceItem(TypedBaseModel):
+    """A step-indexed transcript quote backing a blame attribution."""
+
+    step: int = Field(description="Step index in the trajectory.")
+    quote: str = Field(description="Verbatim excerpt from the agent or environment output.")
+
+
+class BaseFindings(TypedBaseModel):
+    """Base per-episode assessment from a post-hoc LLM investigator.
+
+    Each investigator recipe (general_blame, profiling, agent_scaffolding, ...) extends this
+    base with use-case-specific fields. The cross-recipe core fields (analysis,
+    outcome, summary, primary_blame, primary_blame_confidence) live here so that
+    aggregate views (CSV report, cross-experiment joins) can flatten any recipe's
+    output to a common schema.
+
+    Field order is CoT-deliberate. Models token-emit in declared order, so:
+
+      1. `analysis` — free-form scratchpad, full reasoning before commitment.
+      2. `evidence` — cite specific transcript quotes that ground what comes next.
+      3. `summary` — narrative of what happened, before categorizing.
+      4. `outcome` — categorical commitment.
+      5. `primary_blame` — attribute the dominant cause.
+      6. `primary_blame_confidence` — score the attribution (after making it).
+      7. `other_blames` — secondary causes (knowing the primary).
+      8. `hypothesis` — propose the fix.
+      9. `hypothesis_confidence` — score the fix (after proposing it).
+
+    Pydantic accepts JSON keys in any order on parse, so this reorder does not
+    break existing on-disk records.
+    """
+
+    analysis: str = Field(
+        description="Multi-paragraph reasoning scratchpad. Filled first; grounds all structured fields below."
+    )
+    evidence: list[EvidenceItem] = Field(
+        default_factory=list,
+        description="Step-indexed quotes from the transcript. Required when primary_blame != 'none'.",
+    )
+    summary: str = Field(description="1-3 sentence description of what happened.")
+    outcome: Outcome = Field(description="What happened in the episode beyond the binary reward.")
+    primary_blame: BlameCategory = Field(description="Dominant failure cause; `none` for clean successes.")
+    primary_blame_confidence: int = Field(
+        ge=0, le=5, description="Confidence in primary_blame (0=no basis, 5=certain)."
+    )
+    other_blames: list[BlameCategory] = Field(
+        default_factory=list,
+        description="Secondary contributing causes. Must not repeat primary_blame.",
+    )
+    hypothesis: str = Field(description="1-2 sentences: what change would most likely fix this class of failure.")
+    hypothesis_confidence: int = Field(
+        ge=0, le=5, description="Confidence in the proposed fix (0=pure guess, 5=certain)."
+    )
+
+
+# Deprecated alias — `Findings` was renamed to `BaseFindings` to make the
+# extension contract explicit. The `general_blame` recipe's `OutputModel` is the
+# direct successor (identical on-disk shape). Kept for one release window so
+# existing callers (investigation_report.py, downstream consumers) keep working.
+Findings = BaseFindings
+
+
+class InvestigationMetadata(TypedBaseModel):
+    """Billing and provenance for a single investigator invocation. Sibling to `findings`."""
+
+    model: str = Field(description="Investigator model identifier (e.g. 'claude-opus-4-7').")
+    prompt_tokens: int = Field(default=0, description="Input tokens consumed by the investigator call.")
+    completion_tokens: int = Field(default=0, description="Output tokens produced by the investigator call.")
+    cost_usd: float = Field(default=0.0, description="Total USD cost of the investigator call.")
+    duration_s: float = Field(default=0.0, description="Wall-clock duration of the investigator call in seconds.")
+    timestamp: float = Field(description="Wall-clock time the investigator ran (Unix seconds).")
+    findings_schema_version: str = Field(
+        default=FINDINGS_SCHEMA_VERSION,
+        description="Schema version of the Findings record produced — for forward compatibility.",
+    )
 
 
 class Verifier(TypedBaseModel):
@@ -327,9 +625,29 @@ class ExperimentRecord(TypedBaseModel):
     benchmark_name: str = Field(description="Benchmark name from benchmark_metadata.name.")
     benchmark_version: str | None = Field(default=None, description="Benchmark version string.")
     benchmark_subset: BenchmarkSubset = Field(description="Subset descriptor for MNAR propensity correction.")
-    judge_config: JudgeConfig | None = Field(
+    debug_limit: int | None = Field(
         default=None,
-        description="Judge configuration if a post-hoc LLM judge was run on these episodes.",
+        description=(
+            "If set, the runner truncated the task list to the first N entries at run time. "
+            "Surfaced for downstream tooling — the reproducibility-journal scan script uses "
+            "this signal to flag debug runs as non-submittable without re-reading the full "
+            "ExperimentConfig. None means: no truncation was applied (or the recipe used a "
+            "code path that didn't propagate the value into the record)."
+        ),
+    )
+    is_official: bool | None = Field(
+        default=None,
+        description=(
+            "Explicit run-intent override for the journal-eligibility scan. None: infer from "
+            "debug_limit + subset shape (default). True: official evaluation — bypasses the "
+            "subset-review gate, so a complete, clean run is submittable. False: debug run — "
+            "never submittable. Edit this one field and re-scan to reclassify without re-running; "
+            "it never affects execution."
+        ),
+    )
+    investigator_llm_config: InvestigatorLLMConfig | None = Field(
+        default=None,
+        description="Investigator configuration if a post-hoc LLM investigator was run on these episodes.",
     )
 
     @classmethod
@@ -340,6 +658,8 @@ class ExperimentRecord(TypedBaseModel):
         agent_config: Any,
         benchmark_config: BenchmarkConfig,
         git_cwd: str | None = None,
+        debug_limit: int | None = None,
+        is_official: bool | None = None,
     ) -> "ExperimentRecord":
         """Build ExperimentRecord from experiment parameters."""
         harness_version = _get_package_version("cube-harness") or "unknown"
@@ -357,6 +677,8 @@ class ExperimentRecord(TypedBaseModel):
             benchmark_name=bm_name,
             benchmark_version=bm_version,
             benchmark_subset=BenchmarkSubset.from_benchmark_config(benchmark_config),
+            debug_limit=debug_limit,
+            is_official=is_official,
         )
 
     def write(self, output_dir: Path) -> None:
@@ -372,7 +694,7 @@ class EpisodeRecord(TypedBaseModel):
     """Episode-level record. Written to episodes/<trajectory_id>/episode_record.json after each episode.
 
     Links to ExperimentRecord via evaluation_id. Contains all episode-specific fields:
-    task identity, per-episode tool list, outcome, usage, and optional judge output.
+    task identity, per-episode tool list, outcome, usage, and optional investigator output.
     """
 
     evaluation_id: str = Field(description="FK → ExperimentRecord.evaluation_id.")
@@ -414,31 +736,45 @@ class EpisodeRecord(TypedBaseModel):
         default=None,
         description="Task verifier reference for reproducibility and post-hoc inspection.",
     )
-    judge_output: JudgeOutput | None = Field(
+    findings: BaseFindings | None = Field(
         default=None,
-        description="Per-episode LLM judge assessment (difficulty, feasibility, failure root cause).",
+        description=(
+            "Per-episode LLM investigator assessment (outcome, blame, evidence, hypothesis). "
+            "Concrete shape depends on the recipe used; the base fields are always present."
+        ),
+    )
+    investigation_metadata: InvestigationMetadata | None = Field(
+        default=None,
+        description="Billing/provenance for the investigator invocation. None until a investigator has run.",
     )
 
     @classmethod
-    def from_trajectory(
+    def from_view(
         cls,
-        trajectory: Trajectory,
+        view: "TrajectoryView",
         evaluation_id: str,
         task_metadata: Any | None = None,
         task_config: Any | None = None,
     ) -> "EpisodeRecord":
-        """Assemble an EpisodeRecord from a completed trajectory."""
-        sample_id = trajectory.metadata.get("task_id", "")
-        action_schemas: list[dict] = trajectory.metadata.get("action_schemas", [])
+        """Assemble an EpisodeRecord from a finalized `TrajectoryView`.
+
+        Only reads `view.metadata` — no event payloads are decoded, so
+        building an EpisodeRecord stays O(1) per episode at
+        study-aggregation time.
+        """
+        sample_id = str(view.metadata.get("task_id", ""))
+        action_schemas: list[dict] = view.metadata.get("action_schemas", [])
         tool_names = _extract_tool_names(action_schemas)
 
-        last_env = trajectory.last_env_step()
-        score = last_env.reward
-        stats = trajectory.summary_stats or {}
+        stats = view.summary_stats or {}
+        # Events stream to disk; this method NEVER touches them. All
+        # outcome / usage data comes from summary_stats + reward_info
+        # which `Episode.run` populates at finalize_episode time.
+        score = (view.reward_info or {}).get("reward", stats.get("final_reward", 0.0))
 
         wall_time_s: float | None = None
-        if trajectory.start_time is not None and trajectory.end_time is not None:
-            wall_time_s = trajectory.end_time - trajectory.start_time
+        if view.start_time is not None and view.end_time is not None:
+            wall_time_s = view.end_time - view.start_time
 
         sample_hash: str | None = None
         seed: int | None = None
@@ -462,14 +798,14 @@ class EpisodeRecord(TypedBaseModel):
             tool_names=tool_names,
             is_correct=score > 0,
             score=score,
-            error=_extract_error_type(trajectory),
-            num_turns=len(trajectory.steps),
-            n_agent_steps=stats.get("n_agent_steps", trajectory.n_agent_steps),
-            n_env_steps=stats.get("n_env_steps", trajectory.n_env_steps),
+            error=stats.get("error_type"),
+            num_turns=stats.get("n_env_steps", 0) + stats.get("n_agent_steps", 0),
+            n_agent_steps=stats.get("n_agent_steps", 0),
+            n_env_steps=stats.get("n_env_steps", 0),
             wall_time_s=wall_time_s,
             usage=UsageSummary.from_summary_stats(stats),
-            trajectory_id=trajectory.id,
-            timestamp=trajectory.start_time or 0.0,
+            trajectory_id=view.id,
+            timestamp=view.start_time or 0.0,
         )
 
     def write(self, output_dir: Path) -> None:
@@ -505,7 +841,14 @@ class EvalLog(TypedBaseModel):
 
     @classmethod
     def load(cls, output_dir: Path) -> "EvalLog":
-        """Load experiment_record.json and all per-trajectory episode_record.json files."""
+        """Load experiment_record.json and all per-trajectory episode_record.json files.
+
+        Archived episode dirs (the ``ARCHIVED_MARKER`` suffix a retry leaves behind
+        via ``storage.archive_episode``) are skipped — they hold the *superseded*
+        attempt's record, and counting both attempts would double-count the task in
+        every consumer (journal/EEE avg_score, samples bundle). Mirrors
+        ``ExperimentResult.iter_episode_statuses``.
+        """
         output_dir = Path(output_dir)
         experiment = ExperimentRecord.model_validate_json((output_dir / EXPERIMENT_RECORD_FILENAME).read_text())
         episodes: list[EpisodeRecord] = []
@@ -513,7 +856,7 @@ class EvalLog(TypedBaseModel):
         if episodes_dir.exists():
             for ep_dir in sorted(episodes_dir.iterdir()):
                 record_path = ep_dir / EPISODE_RECORD_FILENAME
-                if ep_dir.is_dir() and record_path.exists():
+                if ep_dir.is_dir() and _ARCHIVED_MARKER not in ep_dir.name and record_path.exists():
                     episodes.append(EpisodeRecord.model_validate_json(record_path.read_text()))
         return cls(experiment=experiment, episodes=episodes)
 

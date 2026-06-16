@@ -6,7 +6,6 @@ from typing import Any
 import litellm
 
 from cube.benchmark import RuntimeContext
-from cube.container import ContainerBackend
 from cube.core import Observation
 from cube.task import Task, TaskConfig, TaskExecutionInfo, TaskMetadata
 from cube.tool import Toolbox, ToolboxConfig
@@ -73,7 +72,6 @@ class BrowseCompTask(Task[BrowseCompTaskMetadata]):
     """A single BrowseComp information-retrieval task."""
 
     validate_per_step: bool = False
-    accept_agent_stop: bool = True
     grader_retries: int = 3
     scorer_model: str
 
@@ -152,7 +150,6 @@ class BrowseCompTaskConfig(TaskConfig[BrowseCompTaskMetadata]):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> BrowseCompTask:
         self.verify_installed()
         encrypted = self.load_task_execution_info()
@@ -171,5 +168,4 @@ class BrowseCompTaskConfig(TaskConfig[BrowseCompTaskMetadata]):
             tool_config=tool_cfg,
             scorer_model=self.scorer_model,
             runtime_context=runtime_context,
-            container_backend=container_backend,
         )

@@ -1,0 +1,1 @@
+../../../src/cube_harness/auto_cube/use_cases/debug/SKILL.md

@@ -10,7 +10,7 @@ Exports two structured files per experiment, together forming the Atlas EvalLog:
   agent description, benchmark metadata, and git provenance. Does not repeat per episode.
 - **`episodes/<trajectory_id>/episode_record.json`** — one JSON file per completed
   episode, co-located with trajectory data. Holds outcome, usage, trajectory summary,
-  and optional judge output. Links to `experiment_record.json` via `experiment_id` FK.
+  and optional investigator output. Links to `experiment_record.json` via `experiment_id` FK.
   Retried episodes overwrite stale records naturally.
 - **`to_jsonl(path)`** — submission helper on `EvalLog` that assembles all per-trajectory
   records into a flat JSONL for ATLAS upload. Call explicitly after `export_eval_log()`.
@@ -69,6 +69,8 @@ class AgentInfo(TypedBaseModel):
     git_commit: str | None
     git_remote_url: str | None           # permanent GitHub permalink
     git_is_dirty: bool | None
+    cube_standard_git_commit: str | None   # cube-standard repo HEAD (editable/source checkout only)
+    cube_standard_git_is_dirty: bool | None
 
     # LLM warm-start embedding (ATLAS cold-start)
     description: str | None
@@ -102,51 +104,59 @@ Tracked packages: `cube-harness`, `cube`, `litellm`, `anthropic`, `openai`,
 
 ```python
 class BenchmarkSubset(TypedBaseModel):
-    name: str           # benchmark_metadata.name (includes subset suffix like "[level=l1]")
-    n_tasks: int        # len(benchmark.task_metadata) — denominator for completion rate
-    filter: str | None  # glob expression if subset_from_glob was used
+    name: str                  # benchmark_metadata.name + subset suffix, e.g. "swebench-live-cube[lite-gold]"
+    n_tasks: int               # num_tasks (the SELECTED view) — denominator for completion rate
+    filter: str | None         # registered named_subsets key for an official subset; else None
+    task_ids: list[str] | None # explicit list for an ad-hoc subset; else None
 
     @classmethod
-    def from_benchmark(cls, benchmark: Any) -> "BenchmarkSubset"
+    def from_benchmark_config(cls, benchmark_config: BenchmarkConfig) -> "BenchmarkSubset"
 ```
 
-Automatically derived from the benchmark object. Used by ATLAS for MNAR propensity
-correction: `n_tasks` tells ATLAS what fraction of the benchmark was run without requiring
-submitters to fill in subjective fields.
+Automatically derived from the benchmark config. Used by ATLAS for MNAR propensity
+correction (`n_tasks` is the denominator) and by the journal-eligibility scan to route a
+run to one of three outcomes:
 
-**`name`** captures any subset suffix applied via `subset_from_glob` (e.g.,
-`"WorkArena_[level=l1]"`) or `subset_from_list`. It is `benchmark_metadata.name` verbatim.
+- **Full benchmark** — `task_ids` None, `filter` None → submittable.
+- **Registered named subset** — the config was built via `named_subset(name)`, which records
+  the registered key on `BenchmarkConfig.subset_name` (cube-standard). `from_benchmark_config`
+  reads it (via `getattr`, degrading gracefully on an older cube-standard) and records it in
+  `filter`, leaving `task_ids` None → submittable when complete.
+- **Ad-hoc subset** (`subset_from_list`, or a `subset_from_glob` that isn't a registered named
+  subset) — `subset_name` is None, so the explicit `task_ids` are recorded → the scan flags it
+  `subset_review`.
 
-**`filter`** is `None` unless manually populated — there is currently no standard way to
-extract the glob pattern from a benchmark object automatically.
+**`n_tasks`** is `benchmark_config.num_tasks` (the selected view), not the full class-level
+`task_metadata` — so a subset run records its real denominator and isn't mis-flagged as
+incomplete.
 
 ---
 
-### `JudgeConfig`
+### `InvestigatorLLMConfig`
 
 ```python
-class JudgeConfig(TypedBaseModel):
+class InvestigatorLLMConfig(TypedBaseModel):
     model: str           # e.g. "claude-opus-4-7"
-    prompt_version: str  # version or hash of the judge prompt template
-    judged_at: str | None  # ISO-8601 timestamp
+    prompt_version: str  # version or hash of the investigator prompt template
+    investigated_at: str | None  # ISO-8601 timestamp
 ```
 
-Configuration of the LLM judge used for post-hoc episode assessment. Stored in
-`ExperimentRecord.judge_config`; `None` if no judge was run.
+Configuration of the LLM investigator used for post-hoc episode assessment. Stored in
+`ExperimentRecord.investigator_llm_config`; `None` if no investigator was run.
 
 ---
 
-### `JudgeOutput`
+### `Findings`
 
 ```python
-class JudgeOutput(TypedBaseModel):
+class Findings(TypedBaseModel):
     difficulty: str | None         # estimated task difficulty (free-form or enum)
     feasible: bool | None          # whether the task was deemed completable
     failure_root_cause: str | None # short description of why the agent failed
 ```
 
-Per-episode LLM judge assessment. Stored in `EpisodeRecord.judge_output`; `None` if no
-judge was run. Populated in a post-processing step, not during the episode run.
+Per-episode LLM investigator assessment. Stored in `EpisodeRecord.findings`; `None` if no
+investigator was run. Populated in a post-processing step, not during the episode run.
 
 ---
 
@@ -175,7 +185,9 @@ class ExperimentRecord(TypedBaseModel):
     benchmark_name: str             # benchmark_metadata.name
     benchmark_version: str | None
     benchmark_subset: BenchmarkSubset
-    judge_config: JudgeConfig | None = None
+    debug_limit: int | None = None  # set if the runner truncated the task list to the first N
+    is_official: bool | None = None # run-intent override for the scan (see below)
+    investigator_llm_config: InvestigatorLLMConfig | None = None
 
     @classmethod
     def from_experiment(
@@ -183,10 +195,19 @@ class ExperimentRecord(TypedBaseModel):
         exp_name: str,
         output_dir: Path,
         agent_config: Any,
-        benchmark: Any,
+        benchmark_config: BenchmarkConfig,
         git_cwd: str | None = None,
+        debug_limit: int | None = None,
+        is_official: bool | None = None,
     ) -> "ExperimentRecord"
 ```
+
+**`is_official`** is an explicit run-intent override read only by the journal-eligibility
+scan: `None` (default) infers intent from `debug_limit` + subset shape; `True` asserts an
+official evaluation (bypasses the subset-review gate → submittable when complete and clean);
+`False` marks a debug run (never submittable). It overrides only the `subset_review` /
+`submittable` decision, never the integrity gates, and never affects execution. Sourced from
+`Experiment.is_official`; editable in `experiment_record.json` to reclassify without re-running.
 
 Written once per experiment to `experiment_record.json`. Contains all fields shared
 across every episode: agent description, benchmark metadata, git provenance.
@@ -232,7 +253,7 @@ class EpisodeRecord(TypedBaseModel):
 
     # Optional post-hoc fields
     verifier: Verifier | None = None
-    judge_output: JudgeOutput | None = None
+    findings: Findings | None = None
 
     @classmethod
     def from_trajectory(
@@ -373,5 +394,6 @@ distinct from the experiment's working files.
 - `git_is_dirty = True` means the eval may not reproduce exactly from `git_commit` alone.
 - `AgentInfo.description` is never auto-populated by `from_agent_config()`. Set it
   manually when preparing ATLAS submissions.
-- `BenchmarkSubset.filter` is `None` unless manually populated after calling
-  `BenchmarkSubset.from_benchmark()`.
+- `BenchmarkSubset.filter` holds the registered `named_subsets` key only when the config was
+  built via `named_subset()` (which records `BenchmarkConfig.subset_name`); it is `None` for an
+  ad-hoc subset or the full benchmark.

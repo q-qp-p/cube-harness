@@ -12,8 +12,13 @@ temp/
 # Claude Code worktrees (created by Claude during development sessions)
 .claude/worktrees/
 
-# Meta-agent experiment outputs (large, not for VCS)
-meta_agent/results/
+# Auto-CUBE experiment outputs (large, not for VCS)
+auto_cube/results/
+
+# Submission staging dirs written by submit_to_journal.py / submit_to_eee.py
+# (relative to cwd when run from the repo root)
+journal-out/
+eee-out/
 
 # Personal experiment recipes (shared recipes are committed without the custom_ prefix)
 recipes/custom_*
@@ -299,3 +304,8 @@ pac.entitlement
 cube-standard/
 # Personal/throwaway experiment recipes (use custom_* prefix)
 recipes/custom_*
+.venv-auto-cube/
+playwright_traces/
+
+# Any file which shouldn't be copied by the ray worker into their env, but is local-enough not to belong to the shared gitignore.
+.rayignore

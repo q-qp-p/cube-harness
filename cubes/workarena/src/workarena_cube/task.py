@@ -2,13 +2,12 @@
 
 import logging
 import time
-from typing import Any, List, Literal, override
+from typing import Any, Literal, override
 
 import browsergym.workarena
 from browsergym.workarena.tasks.base import AbstractServiceNowTask
 from cube.benchmark import RuntimeContext
-from cube.container import ContainerBackend
-from cube.core import Action, EnvironmentOutput, Observation
+from cube.core import Observation
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Toolbox
 from cube.tools.browser import BrowserTool
@@ -61,7 +60,7 @@ class WorkArenaTask(Task):
             tool = self.tool
         if not isinstance(tool, WorkArenaBrowserTool):
             raise RuntimeError(
-                f"The browser tool must satisfy the WorkArenaBrowserTool protocol (e.g., BrowsergymTool or SyncPlaywrightTool), got {type(tool).__name__}"
+                f"The browser tool must satisfy the WorkArenaBrowserTool protocol (e.g., BgymTool or SyncPlaywrightTool), got {type(tool).__name__}"
             )
         return tool
 
@@ -153,9 +152,11 @@ class WorkArenaTask(Task):
         return self._validate_cache  # type: ignore[return-value]
 
     @override
-    def step(self, action: Action | List[Action]) -> EnvironmentOutput:
+    def _post_action(self, obs: Observation, role: str | None = None) -> None:
+        # Invalidate the per-step validate cache after each action so the next
+        # `finished()` / `evaluate()` re-validates against the latest world state.
+        # `_post_action` fires on BOTH the gym `step` and agent (`AgentView`) paths.
         self._validate_cache = None
-        return super().step(action)
 
     def evaluate(self, obs: Observation | None = None) -> tuple[float, dict[str, Any]]:
         """Score the current task state via WorkArena's validate()."""
@@ -187,9 +188,8 @@ class WorkArenaTaskConfig(TaskConfig[WorkArenaTaskMetadata]):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> WorkArenaTask:
-        _ = runtime_context, container_backend
+        _ = runtime_context
         assert self.tool_config, f"WorkArenaTaskConfig requires a tool_config, got {self.tool_config}"
         return WorkArenaTask(
             metadata=self.metadata,

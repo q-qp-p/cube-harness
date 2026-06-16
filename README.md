@@ -10,6 +10,8 @@ Open source harness for building and evaluating AI agents using the [CUBE Standa
 > **cube-harness is in active development (alpha).** Interfaces may change. We welcome early adopters and contributors who want to shape the framework, not just use it.
 > See our [Roadmap](ROADMAP.md) and [Contributing Guide](CONTRIBUTING.md).
 >
+> **Want to change the harness itself?** Start with [Changing cube-harness](CONTRIBUTING.md#changing-cube-harness) and the project [Design Philosophy](https://the-ai-alliance.github.io/cube-standard/design-philosophy); the `/gatekeep-rfc` skill lets you check your own draft before anyone else reads it.
+>
 > **Have a benchmark to contribute?** [Fill out this short form](https://docs.google.com/forms/d/e/1FAIpQLSddMFyRXZJPpD0I2K27OEmIPUpj57w--u2NuMscrjNlkqy8rQ/viewform) — no commitment required. Want to go deeper? [Apply to join the core team](https://forms.gle/JFiBi4ynfVLMghAH8).
 
 <!-- [Published Documentation](https://the-ai-alliance.github.io/cube-harness/) -->
@@ -47,26 +49,49 @@ make test
 
 The [`hello_miniwob`](recipes/hello_miniwob.py) recipe demonstrates running a ReAct agent on the MiniWob benchmark.
 
-**Start here** — 2 tasks, sequential (fast, no Ray required):
+**Start here** — first 2 tasks, in-process (fast, no Ray required):
 
 ```bash
-make debug
+make debug          # → uv run recipes/hello_miniwob.py --limit 2
 ```
 
-Full benchmark (all 125 tasks, parallel via Ray):
+Full benchmark (parallel via Ray):
 
 ```bash
-make hello
+make hello          # → uv run recipes/hello_miniwob.py
 ```
-
-This will:
-1. Launch a headless browser environment
-2. Run a ReAct agent powered by gpt-5-mini on MiniWob tasks
-3. Save trajectories and results to `~/cube_harness_results/{YYYYMMDD_HHMMSS}_react_miniwob/`
 
 ### Configuration
 
-Recipes are the configuration. Copy one from [`recipes/`](recipes/), edit what you need, and run it. Config objects are typed Pydantic models — serialized to disk with every experiment so results are always reproducible.
+A recipe is a declarative config file: it imports canonical configs by name,
+tweaks a few attributes, builds one or more `Experiment` objects, and ends
+with `run(...)`. **Copy a recipe from [`recipes/`](recipes/) and edit it** —
+recipes are documentation-by-example, not a CLI.
+
+```python
+from cube_harness.agents.genny_configs import GENNY_CONFIGS  # "default", "swe"
+from cube_harness.infra import INFRA_CONFIGS                  # ~/.cube/infra.py; "local" built in
+from cube_harness.recipe import run
+
+agent = GENNY_CONFIGS["swe"]          # every lookup is a fresh deep copy
+agent.budget.cost_limit = 2.0         # validated at the assignment site
+
+exp = Experiment(name="x", agent_config=agent, benchmark_config=..., infra=INFRA_CONFIGS["local"])
+if __name__ == "__main__":
+    run(exp)                          # or run(exp_a, exp_b)
+```
+
+`run()` is the only CLI, identical for every recipe and not extensible:
+`--limit N` (first N tasks, in-process), `--ray N` (worker count),
+`--set dotted.path=value` (ad-hoc override). For anything structural, clone
+the file. Config objects are typed Pydantic models, serialized with every
+experiment for reproducibility.
+
+**Infra** is machine-local in `~/.cube/infra.py` (a `dict[str, InfraConfig]`,
+never committed; credentials come from env). `"local"` works with zero setup.
+To use a cluster/cloud, copy [`recipes/infra_template.py`](recipes/infra_template.py)
+to `~/.cube/infra.py` and edit it — it documents the process and shows
+LocalInfraConfig plus commented Toolkit/Azure examples.
 
 See **[docs/configuration.md](docs/configuration.md)** for the full philosophy, a comparison with Hydra/YAML/CLI approaches, and how to run sweeps.
 

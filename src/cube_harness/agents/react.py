@@ -1,16 +1,25 @@
 import logging
+from typing import TYPE_CHECKING
 
 from cube.core import Action, ActionSchema, Observation
 from cube.task import STOP_ACTION
 from litellm import Message
 from termcolor import colored
 
-from cube_harness.agent import Agent, AgentConfig
-from cube_harness.core import AgentOutput, LLMCall
+from cube_harness.agent import Agent, AgentConfig, apply_description_overrides
+from cube_harness.core import AgentOutput
 from cube_harness.llm import LLMConfig, Prompt
 from cube_harness.utils import parse_actions
 
+if TYPE_CHECKING:
+    from cube_harness.streamer import EventStreamer
+
 logger = logging.getLogger(__name__)
+
+# How many times to re-prompt the model within a single step when every tool
+# call it emitted had malformed JSON arguments. After this many retries the step
+# returns empty actions and the episode ends cleanly (never an infinite loop).
+MAX_PARSE_RETRIES = 2
 
 
 class ReactAgentConfig(AgentConfig):
@@ -58,20 +67,24 @@ class ReactAgent(Agent):
     output_content_types: list[str] = ["application/json"]
 
     def __init__(self, config: ReactAgentConfig, tools: list[ActionSchema]):
-        self.config = config
+        super().__init__(config)
         self.llm = config.llm_config.make()
         self.token_counter = config.llm_config.make_counter()
+        # STOP (`final_step`) is always part of the task's `action_set` — it's a universal
+        # `@tool_action` on the Tool base, already Anthropic-safe
+        # (`{"type": "object", "properties": {}}`). We never append it manually.
+        # `can_finish=False` opts the agent out of offering STOP to the LLM.
         self.tools: list[dict] = [tool.as_dict() for tool in tools]
-        if config.can_finish:
-            stop_tool = STOP_ACTION.as_dict()
-            # Ensure parameters has "type": "object" — some LLM APIs (e.g. Anthropic)
-            # require it even for tools with no parameters.
-            if not stop_tool["function"]["parameters"].get("type"):
-                stop_tool["function"]["parameters"] = {"type": "object", "properties": {}}
-            self.tools.append(stop_tool)
+        if not config.can_finish:
+            self.tools = [t for t in self.tools if t["function"]["name"] != STOP_ACTION.name]
+        apply_description_overrides(self.tools, config.description_overrides)
 
         self.history: list[dict | Message] = []
         self._actions_cnt = 0
+
+    def attach_recorder(self, recorder: "EventStreamer") -> None:
+        super().attach_recorder(recorder)
+        self.llm.attach_recorder(recorder)
 
     def step(self, obs: Observation) -> AgentOutput:
         if self.max_actions_reached():
@@ -79,27 +92,55 @@ class ReactAgent(Agent):
             return AgentOutput(actions=[Action(id="stop", name=STOP_ACTION.name, arguments={})])
         self.history += obs.to_llm_messages()
         self.maybe_compact_history()
+        self._actions_cnt += 1
+
+        # A model can emit a tool call whose arguments are not valid JSON. Rather
+        # than crash the episode, reply with a corrective `role="tool"` message —
+        # this keeps the tool_call/tool_result pairing valid (strict providers
+        # reject an orphaned tool_call on the next turn) and gives the model the
+        # feedback it needs to self-correct. Bounded by MAX_PARSE_RETRIES so a
+        # persistently-broken model degrades to a clean episode end (empty
+        # actions) instead of looping forever.
+        actions: list[Action] = []
+        for _ in range(MAX_PARSE_RETRIES + 1):
+            llm_output = self._call_llm()
+            actions, malformed = parse_actions(llm_output)
+            for tc in malformed:
+                self.history.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": "Your previous tool call arguments were not valid JSON. "
+                        "Please retry the call with a valid JSON object.",
+                    }
+                )
+            if actions or not malformed:
+                break
+            logger.warning("All tool calls had malformed JSON arguments; re-prompting the model.")
+        return AgentOutput(actions=actions)
+
+    def _call_llm(self) -> Message:
+        """Render the current history, call the LLM once, append the assistant
+        message to history, and return it."""
         messages = self.choose_steps_to_render(self.history)
         prompt = Prompt(messages=messages, tools=self.tools)
         prompt_tokens = self.token_counter(messages=messages)
         logger.info(f"Prompt tokens (estimated): {prompt_tokens}")
         try:
             logger.debug(f"Prompt: {prompt}")
-            llm_response = self.llm(prompt)
-            logger.debug(f"LLM Response: {llm_response}")
+            call = self.llm.call(prompt, tag="act")
+            logger.debug(f"LLM Response: {call.output}")
         except Exception as e:
             logger.exception(colored(f"Error getting LLM response: {e}. Prompt: {prompt}", "red"))
             raise e
-        usage = llm_response.usage
+        usage = call.usage
         logger.info(
             f"LLM usage - prompt: {usage.prompt_tokens}, completion: {usage.completion_tokens}, "
             f"cached: {usage.cached_tokens}, cache_created: {usage.cache_creation_tokens}, cost: ${usage.cost:.4f}"
         )
-        llm_output = llm_response.message
+        llm_output = call.output
         self.history.append(llm_output)
-        self._actions_cnt += 1
-        llm_call = LLMCall(llm_config=self.config.llm_config, prompt=prompt, output=llm_output, usage=usage)
-        return AgentOutput(actions=parse_actions(llm_output), llm_calls=[llm_call])
+        return llm_output
 
     def choose_steps_to_render(self, history: list[dict | Message]) -> list[dict | Message]:
         """Select which parts of history to include in the prompt based on length."""
@@ -148,12 +189,12 @@ class ReactAgent(Agent):
         ]
         prompt = Prompt(messages=messages)
         try:
-            llm_response = self.llm(prompt)
+            call = self.llm.call(prompt, tag="compact")
         except Exception as e:
             logger.exception(f"Error compacting history: {e}")
             raise
 
-        summary = llm_response.message.content
+        summary = call.output.content
         logger.info(f"Compacted {midpoint} messages into summary:\n{summary}")
         # Rebuild history: system + summary + remaining messages
         summary_message = dict(role="assistant", content=f"## Previous Interactions summary:\n{summary}")

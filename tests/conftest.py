@@ -16,7 +16,7 @@ from cube.core import Action, ActionSchema, Content, EnvironmentOutput, Observat
 from cube.task import Task as CubeTask
 from cube.task import TaskConfig as CubeTaskConfig
 from cube.task import TaskMetadata
-from cube.tool import ToolConfig, tool_action
+from cube.tool import Tool, ToolConfig, tool_action
 from PIL import Image
 
 from cube_harness.agent import Agent, AgentConfig
@@ -27,7 +27,6 @@ from cube_harness.core import (
 )
 from cube_harness.episode import Episode
 from cube_harness.llm import LLMConfig, Prompt
-from cube_harness.tool import ToolWithTelemetry
 
 # --- Core fixtures ---
 
@@ -132,7 +131,7 @@ def sample_prompt() -> Prompt:
 # --- Tool fixtures ---
 
 
-class MockTool(ToolWithTelemetry):
+class MockTool(Tool):
     """Mock tool implementation for testing."""
 
     def __init__(self):
@@ -256,8 +255,8 @@ class MockCubeTask(CubeTask):
 class MockCubeTaskConfig(CubeTaskConfig):
     """Cube TaskConfig that instantiates a MockCubeTask."""
 
-    def make(self, runtime_context=None, container_backend=None) -> MockCubeTask:
-        _ = runtime_context, container_backend
+    def make(self, runtime_context=None) -> MockCubeTask:
+        _ = runtime_context
         return MockCubeTask(
             metadata=TaskMetadata(id=self.task_id),
             tool_config=self.tool_config or MockToolConfig(),
@@ -290,6 +289,34 @@ class MockCubeBenchmarkConfig(CubeBenchmarkConfig):
     benchmark_class = MockCubeBenchmark
 
 
+class MockNamedSubsetBenchmarkConfig(CubeBenchmarkConfig):
+    """Cube BenchmarkConfig with a registered named subset ('gold') globbed over a tag.
+
+    Two of three tasks carry the 'GOLD' marker, so named_subset('gold') selects {g1, g2}.
+    Used to exercise BenchmarkSubset's official-named-subset recognition.
+    """
+
+    benchmark_metadata = BenchmarkMetadata(
+        name="mock-cube",
+        version="0.1.0",
+        description="Mock cube benchmark with a named gold subset",
+        named_subsets={"gold": ("abstract_description", "GOLD")},
+    )
+    task_metadata = {
+        "g1": TaskMetadata(id="g1", abstract_description="GOLD"),
+        "g2": TaskMetadata(id="g2", abstract_description="GOLD"),
+        "t3": TaskMetadata(id="t3", abstract_description="other"),
+    }
+    task_config_class = MockCubeTaskConfig
+    benchmark_class = MockCubeBenchmark
+
+
+@pytest.fixture
+def mock_named_subset_benchmark_config() -> MockNamedSubsetBenchmarkConfig:
+    """Cube benchmark config exposing a registered named subset 'gold' (= {g1, g2})."""
+    return MockNamedSubsetBenchmarkConfig()
+
+
 @pytest.fixture
 def mock_cube_task_config() -> MockCubeTaskConfig:
     """Cube task config for mock_cube_task_1."""
@@ -310,7 +337,6 @@ def mock_episode(tmp_dir, mock_agent_config, mock_cube_task_config) -> Episode:
         output_dir=tmp_dir,
         agent_config=mock_agent_config,
         task_config=mock_cube_task_config,
-        container_backend=None,
         exp_name="mock-episode",
         max_steps=5,
         runtime_context=None,
