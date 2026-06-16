@@ -167,7 +167,6 @@ class WAATask(Task):
         tool_config:     ToolConfig            — pass ComputerConfig(...)
         infra:           InfraConfig           — used to launch task VMs.
         validate_per_step: bool                — inherited; default False
-        accept_agent_stop: bool                — inherited; default True
     """
 
     infra: InfraConfig | None = None
@@ -178,9 +177,9 @@ class WAATask(Task):
 
     _resource_handle: ResourceHandle | None = PrivateAttr(default=None)
 
-    def model_post_init(self, __context: Any) -> None:
+    def _make_tool(self, role: str | None = None) -> "ComputerBase":
         """Create the Computer tool without a VM — VM is deferred to reset()."""
-        self._tool = self.tool_config.make(container=None, vm=None)
+        return self.tool_config.make(container=None)  # type: ignore[return-value]
 
     @property
     def _computer(self) -> "ComputerBase":
@@ -206,9 +205,8 @@ class WAATask(Task):
         # without this gate we'd burn ~4min of in-task retries before
         # failing the episode. Fail fast so Ray re-queues on a fresh VM.
         self._health_gate_or_raise()
-        # ComputerBase.attach_vm() takes any object with an `.endpoint` str
-        # attribute; the cube-infra handle satisfies that protocol.
-        self._computer.attach_vm(self._resource_handle)
+        # ComputerBase.attach_endpoint() takes the endpoint URL string.
+        self._computer.attach_endpoint(self._resource_handle.endpoint)
 
     def _extract_public_ip(self) -> str:
         """Pull the VM's public IP out of the resource handle's SSH tunnel argv.
@@ -522,7 +520,7 @@ class WAATask(Task):
         """Return True if the task has reached a terminal state."""
         return self._computer._is_done
 
-    def obs_postprocess(self, obs: Observation) -> Observation:
+    def obs_postprocess(self, obs: Observation, role: str | None = None) -> Observation:
         """Post-process raw observation before returning to the agent."""
         if self.use_som:
             return self._postprocess_som(obs)

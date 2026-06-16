@@ -1,24 +1,26 @@
 import logging
 import time
-import warnings
 from pathlib import Path
-from typing import Callable, Self
+from typing import Self
 
 from cube.benchmark import Benchmark, RuntimeContext
-from cube.container import ContainerBackend
-from cube.core import EnvironmentOutput, StepError, TypedBaseModel
+from cube.core import EnvironmentOutput, TypedBaseModel
+from cube.resource import IncompatibleInfraError
 from cube.task import TaskConfig
 from opentelemetry.trace import StatusCode
+from pydantic import Field
 from termcolor import colored
 
 from cube_harness.agent import AgentConfig
-from cube_harness.core import AgentOutput, Trajectory, TrajectoryStep
+from cube_harness.core import TrajectoryMetadata
 from cube_harness.episode_logs import trajectory_log_id
 from cube_harness.episode_status import TERMINAL_STATUSES, EpisodeStatus, next_retry_count
 from cube_harness.eval_log import EpisodeRecord
+from cube_harness.llm import is_permanent_llm_error
 from cube_harness.metrics.tracer import get_tracer
-from cube_harness.storage import EPISODES_DIR, FileStorage, Storage
-from cube_harness.summary import SummaryProcessor
+from cube_harness.storage import FileStorage, Storage, TrajectoryView
+from cube_harness.streamer import EventStreamer, EventStreamerConfig
+from cube_harness.tool import AgentStop, Budget, BudgetExceeded, build_agent_tools
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +35,40 @@ class EpisodeConfig(TypedBaseModel):
     exp_name: str
     output_dir: Path
     max_steps: int
+    max_cost_usd: float | None = None
     task_config: TaskConfig
+    # Streamer/sink configuration. Default = FileStorage as the sole
+    # sink (counter folding for `summary_stats` lives inside the
+    # streamer itself, no separate sink). Forward seam for OTel /
+    # RL HTTP / extra sinks; see `EventStreamerConfig`.
+    recorder_config: EventStreamerConfig = Field(default_factory=EventStreamerConfig)
+    write_eval_log: bool = True
+    trajectory_id: str | None = None
+
+    @property
+    def resolved_trajectory_id(self) -> str:
+        return self.trajectory_id or trajectory_log_id(self.task_config.task_id, self.id)
 
 
 class Episode:
-    """Manages the execution of an agent on a specific task in an environment."""
+    """Manages the execution of an agent on a specific task in an environment.
+
+    RFC `agent-owns-loop`: Episode no longer drives a per-turn loop.
+    It builds the monitored env_tool + EventStreamer, attaches the
+    streamer to the agent's event producers (LLM, sub-agents) via
+    `agent.attach_recorder(streamer)`, then calls
+    `agent.run(initial.obs, env_tool)` and finalizes regardless of how
+    the agent returns or raises. The previous `_run_loop` is gone; every
+    agent (legacy `step()` and new overridden `run()`) flows through the
+    same Episode body.
+
+    The episode body (`_run_episode`) is fully synchronous and runs on
+    the calling thread — no event loop. Sequential agents dispatch tools
+    inline (sync Playwright / shell work natively; pdb is single-stack).
+    A parallel agent (`parallel_actions=True`) opens its own
+    `asyncio.run` scoped to the gather inside `Agent.run` — the only
+    place an event loop exists.
+    """
 
     def __init__(
         self,
@@ -49,7 +80,10 @@ class Episode:
         max_steps: int,
         storage: Storage | None,
         runtime_context: RuntimeContext | None,
-        container_backend: ContainerBackend | None,
+        max_cost_usd: float | None = None,
+        recorder_config: EventStreamerConfig | None = None,
+        write_eval_log: bool = True,
+        trajectory_id: str | None = None,
     ) -> None:
         self.config = EpisodeConfig(
             id=id,
@@ -57,51 +91,25 @@ class Episode:
             exp_name=exp_name,
             output_dir=output_dir,
             max_steps=max_steps,
+            max_cost_usd=max_cost_usd,
             task_config=task_config,
+            recorder_config=recorder_config or EventStreamerConfig(),
+            write_eval_log=write_eval_log,
+            trajectory_id=trajectory_id,
         )
         self._runtime_context = runtime_context
-        self._container_backend = container_backend
         self.storage = storage or FileStorage(output_dir)
         self.allow_overwrite = False
 
     @classmethod
     def load_episode_from_config(cls, config_path: Path, benchmark: Benchmark | None = None) -> Self:
-        """
-        Load episode configuration from disk and recreate the episode.
-
-        The full TaskConfig is stored in EpisodeConfig and is self-contained
-        (call task_config.make()). `benchmark` is optional — if provided, its
-        runtime_context and container_backend are forwarded to the episode.
-
-        Args:
-            config_path: Path to the episode config JSON file
-            benchmark: Benchmark instance (optional; used for runtime_context/container_backend)
-
-        Returns:
-            Episode instance ready to run
-        """
-        if config_path.name == "episode_config.json":
-            output_dir = config_path.parent.parent.parent
-            if config_path.parent.parent.name != EPISODES_DIR:
-                raise ValueError(f"Expected episode_config.json inside {EPISODES_DIR}/, got {config_path}")
-        else:
-            output_dir = config_path.parent
-            if output_dir.name == "episode_configs":
-                output_dir = output_dir.parent
-        storage = FileStorage(output_dir)
-        episode_config = storage.load_episode_config(config_path)
-
-        if benchmark is not None and not isinstance(benchmark, Benchmark):
-            raise ValueError(f"benchmark must be a cube.benchmark.Benchmark instance or None, got {type(benchmark)}")
+        """Recreate an Episode from a persisted EpisodeConfig — used by
+        the retry / resume path to rerun a previously-prepared episode."""
+        # Unchanged — relies on EpisodeConfig.model_validate_json.
+        with open(config_path) as f:
+            episode_config = EpisodeConfig.model_validate_json(f.read())
+        storage = FileStorage(episode_config.output_dir)
         runtime_context = benchmark._runtime_context if benchmark is not None else None
-        # ``container_backend`` is a deprecated field on ``BenchmarkConfig``;
-        # reading it raises a DeprecationWarning. Forward it for backwards
-        # compatibility until cube-standard removes it.
-        container_backend = None
-        if benchmark is not None:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                container_backend = benchmark.config.container_backend
         return cls(
             id=episode_config.id,
             output_dir=episode_config.output_dir,
@@ -109,49 +117,38 @@ class Episode:
             task_config=episode_config.task_config,
             exp_name=episode_config.exp_name,
             max_steps=episode_config.max_steps,
+            max_cost_usd=episode_config.max_cost_usd,
             storage=storage,
             runtime_context=runtime_context,
-            container_backend=container_backend,
+            recorder_config=episode_config.recorder_config,
+            write_eval_log=episode_config.write_eval_log,
+            trajectory_id=episode_config.trajectory_id,
         )
 
-    def run(self) -> Trajectory:
-        """Main loop to run the agent on a single specific task.
+    def run(self) -> TrajectoryView:
+        """Sync entry point — runs the episode body directly on the calling thread.
 
-        Returns:
-            Trajectory containing the full history of the run.
+        No event loop on the calling thread for sequential agents: sync tools
+        (Playwright browser sessions, shell containers) work natively, and pdb
+        lands in a single stack. The parallel agent path (`parallel_actions=True`)
+        opens its own `asyncio.run` scoped only to the gather inside `Agent.run`.
+
+        Returns a lazy `TrajectoryView` onto the just-finalized episode dir.
         """
-        task = self.config.task_config.make(
-            runtime_context=self._runtime_context, container_backend=self._container_backend
-        )
-        action_set = task.action_set
-        step_fn = task.step
-        close_fn = task.close
-        evaluate_fn = task.evaluate
-
-        def setup_fn() -> EnvironmentOutput:
-            obs, info = task.reset()
-            return EnvironmentOutput(obs=obs, info=info)
-
-        agent = self.config.agent_config.make(action_set, task_id=self.config.task_config.task_id)
-        # action_schemas is read by eval_log.AgentInfo (feat/atlas-eval-log) to populate
-        # the tool list in structured evaluation records without re-instantiating the task.
-        extra_metadata = {"action_schemas": [a.as_dict() for a in action_set]}
-        return self._run_loop(setup_fn, step_fn, evaluate_fn, close_fn, agent, extra_metadata=extra_metadata)
+        return self._run_episode()
 
     def _open_status(self, trajectory_id: str) -> EpisodeStatus:
         """Initialise `status.json` for this attempt.
 
         If the prior status is terminal and this Episode opted in to overwrite
         (a legitimate retry), archive the prior directory so its terminal
-        `status.json` survives. Without `allow_overwrite`, `save_trajectory`
+        `status.json` survives. Without `allow_overwrite`, `save_metadata`
         will later raise — preserving the safety guard against accidental
         double-runs.
         """
         prior = self.storage.read_episode_status(trajectory_id)
         if prior is not None and prior.status in TERMINAL_STATUSES and self.allow_overwrite:
-            ep_dir = self.storage._episode_dir(trajectory_id)
-            if ep_dir.exists():
-                self.storage._archive_episode(ep_dir)
+            self.storage.archive_episode(trajectory_id)
         now = time.time()
         ep_status = EpisodeStatus(
             status="RUNNING",
@@ -165,231 +162,228 @@ class Episode:
         self.storage.write_episode_status(trajectory_id, ep_status)
         return ep_status
 
-    def _run_loop(
-        self,
-        setup_fn: Callable[[], EnvironmentOutput],
-        step_fn: Callable,
-        evaluate_fn: Callable,
-        close_fn: Callable,
-        agent,
-        extra_metadata: dict | None = None,
-    ) -> Trajectory:
-        """Run loop for the agent on the task."""
+    def _run_episode(self) -> TrajectoryView:
+        """Sync episode body — runs directly on the calling thread.
+
+        Flow:
+            1. setup (status, task, action_set, agent, trajectory, dirs).
+            2. build the agent-facing env_tool the agent drives
+               (build_agent_tools) — task keeps its concrete tool.
+            3. build EventStreamer bound to trajectory + storage + summary.
+            4. record initial obs (streamer.record_reset).
+            5. agent.run(initial.obs, env_tool) — sync dispatch. For
+               parallel_actions=True the agent opens its own asyncio.run
+               scoped to the gather; for sequential it runs inline.
+            6. finalize:
+               - terminal task.evaluate() → streamer.record_evaluation.
+               - summary_stats + save_trajectory.
+               - summary.on_episode_complete; EpisodeRecord.write.
+               - task.close + tracer.shutdown.
+
+        Exception handling:
+            - BudgetExceeded: recorded as failure, episode marked
+              MAX_STEPS_REACHED (analogous to today's max_steps exit).
+            - Anything else (incl. agent-side crashes): recorded as
+              failure, episode marked FAILED (or INVALID_CONFIG for
+              permanent provider errors).
+            - The `finally` block always runs evaluate + finalize.
+        """
         task_id = self.config.task_config.task_id
-        trajectory_id = trajectory_log_id(task_id, self.config.id)
+        trajectory_id = self.config.resolved_trajectory_id
         tracer = get_tracer(self.config.exp_name)
 
-        # Heartbeat 1: covers stuck setup_fn (env reset, container boot).
+        # Heartbeat 1: covers stuck task creation / reset.
         ep_status = self._open_status(trajectory_id)
+        meta: TrajectoryMetadata | None = None
+        streamer: EventStreamer | None = None
+        max_steps_reached = False
 
-        trajectory: Trajectory | None = None
         try:
             with tracer.episode(task_id, experiment=self.config.exp_name) as episode_span:
                 start_time = ep_status.started_at
-                env_output = setup_fn()
+
+                # 1. Build the live task and agent.
+                task = self.config.task_config.make(runtime_context=self._runtime_context)
+                action_set = task.action_set
+                agent = self.config.agent_config.make(action_set, task_id=task_id)
+
+                # 2. Reset the env to get the initial observation.
+                obs, info = task.reset()
+                initial = EnvironmentOutput(obs=obs, info=info)
+
                 agent_name = self.config.agent_config.agent_name
-                trajectory = Trajectory(
+                # WRITE-AT-START: persist TrajectoryMetadata with stub
+                # summary fields and `end_time=None`. Makes crashed-
+                # mid-run episodes loadable: the file exists on disk
+                # and `TrajectoryView.is_complete` returns False until
+                # finalize_episode writes the final fields below.
+                meta = TrajectoryMetadata(
                     id=trajectory_id,
-                    steps=[TrajectoryStep(output=env_output, start_time=start_time, end_time=time.time())],
                     metadata={
                         "task_id": task_id,
                         "agent_name": agent_name,
                         "seed": getattr(self.config.task_config, "seed", None),
-                        **env_output.info,
-                        **(extra_metadata or {}),
+                        **initial.info,
+                        "action_schemas": [a.as_dict() for a in action_set],
                     },
                     start_time=start_time,
                 )
-                self.storage.save_trajectory(trajectory, allow_overwrite=self.allow_overwrite)
-                ep_dir = self.storage._episode_dir(trajectory.id)
-                (ep_dir / "episode_config.json").write_text(
-                    self.config.model_dump_json(indent=2, serialize_as_any=True)
+                self.storage.save_metadata(meta, allow_overwrite=self.allow_overwrite)
+                self.storage.save_episode_config(self.config)
+
+                # 3. Build budget + streamer + install monitoring. The
+                # streamer is the single event fan-out: producers (LLM,
+                # MonitoredTool) emit through `streamer.emit(...)`, which
+                # folds stats counters AND forwards to sinks (today
+                # FileStorage; OTel + RL HTTP plug in additively via
+                # EventStreamerConfig). Event numbering is owned by
+                # storage.save_event (per-trajectory `itertools.count`).
+                budget = Budget(
+                    max_agent_steps=self.config.max_steps,
+                    max_cost_usd=self.config.max_cost_usd,
                 )
-                summary_proc = SummaryProcessor(ep_dir)
-                summary_proc.on_step(0, trajectory.steps[0])
-                logger.info(colored(f"Episode started — done={env_output.done} reward={env_output.reward}", "blue"))
-                turns = 0
-                while not env_output.done and turns < self.config.max_steps:
-                    # Heartbeat 2: start of each turn, before agent.step() and step_fn().
-                    ep_status.last_heartbeat_at = time.time()
-                    ep_status.current_step = turns + 1
-                    self.storage.write_episode_status(trajectory_id, ep_status)
+                metadata_updates: dict = {}
+                streamer = EventStreamer(
+                    trajectory_id=trajectory_id,
+                    storage=self.storage,
+                    budget=budget,
+                    metadata_updates=metadata_updates,
+                )
+                streamer._sinks.extend(self.config.recorder_config.extra_sinks)
+                # 4. Build the agent-facing tool the agent drives: a
+                # `MonitoredTool` over cube-standard's `AgentView`
+                # (`task.agent_roles()`, single-agent = one seat). The `Task`
+                # itself is never handed to the agent — only the obs-in/action-out
+                # view. The task keeps its concrete tool so its own
+                # setup/reset/evaluate/finished reach concrete methods (`bash`,
+                # `evaluate_js`), private attrs (`_container`, `_config`), and
+                # type checks; the agent's view shares the same inner tool
+                # instance(s), so env state is shared. `Agent.run` picks `_run`
+                # (sync) or `_arun` (async gather) by `AgentConfig.parallel_actions`.
+                env_tool = build_agent_tools(task, streamer)[0]
 
-                    with tracer.step(f"turn_{turns}") as span:
-                        ts = time.time()
-                        try:
-                            agent_output = agent.step(env_output.obs)
-                        except Exception as e:
-                            logger.exception(f"Error in agent.step() at turn {turns}: {e}")
-                            agent_output = AgentOutput(error=StepError.from_exception(e))
-                            agent_step = TrajectoryStep(output=agent_output, start_time=ts, end_time=time.time())
-                            self.storage.save_step(agent_step, trajectory.id, len(trajectory.steps))
-                            summary_proc.on_step(len(trajectory.steps), agent_step)
-                            trajectory.steps.append(agent_step)
-                            ep_status.had_step_errors = True
-                            raise e
+                # 5. Record the initial obs as a synthetic ToolCallEvent
+                # whose parent is the RESET sentinel.
+                streamer.record_reset(initial)
+                logger.info(colored("Episode started — reset done", "blue"))
 
-                        self.log_agent_output(turns, agent_output)
-                        agent_step = TrajectoryStep(output=agent_output, start_time=ts, end_time=time.time())
-                        self.storage.save_step(agent_step, trajectory.id, len(trajectory.steps))
-                        summary_proc.on_step(len(trajectory.steps), agent_step)
-                        trajectory.steps.append(agent_step)
-                        if agent_output.error is not None:
-                            ep_status.had_step_errors = True
+                # 6. Attach the recorder to the agent's event producers
+                # (LLM, sub-agents). The agent's `attach_recorder`
+                # propagates to held LLMs so their `.call()` auto-emits
+                # `LLMCallEvent`s — agent code never touches the
+                # recorder directly.
+                agent.attach_recorder(streamer)
 
-                        if not agent_output.actions and not agent_output.error:
-                            logger.info(colored("Agent returned no actions — stopping episode.", "yellow"))
-                            break
-
-                        env_ts = time.time()
-                        try:
-                            env_output = step_fn(agent_output.actions)
-                        except Exception as e:
-                            logger.exception(f"Error in step() at turn {turns}: {e}")
-                            env_output = EnvironmentOutput(obs=env_output.obs, error=StepError.from_exception(e))
-                            env_step = TrajectoryStep(output=env_output, start_time=env_ts, end_time=time.time())
-                            self.storage.save_step(env_step, trajectory.id, len(trajectory.steps))
-                            summary_proc.on_step(len(trajectory.steps), env_step)
-                            trajectory.steps.append(env_step)
-                            ep_status.had_step_errors = True
-                            raise e
-
-                        logger.info(
-                            colored(
-                                f"Turn {turns} Env output: done={env_output.done} reward={env_output.reward}", "blue"
-                            )
-                        )
-                        env_step = TrajectoryStep(output=env_output, start_time=env_ts, end_time=time.time())
-                        self.storage.save_step(env_step, trajectory.id, len(trajectory.steps))
-                        summary_proc.on_step(len(trajectory.steps), env_step)
-                        trajectory.steps.append(env_step)
-                        if env_output.error is not None:
-                            ep_status.had_step_errors = True
-                        span.set_attribute("done", env_output.done)
-                        span.set_attribute("reward", env_output.reward)
-                        turns += 1
-                # Loop exited without `done=True` — either max_steps fired or the agent
-                # gave up. cube's task.step only calls evaluate() when done or
-                # validate_per_step, so we'd otherwise return reward=0.0. Force one
-                # final evaluation and save it as a synthetic env step so the
-                # trajectory's last_env_step carries the real reward.
-                max_steps_reached = turns >= self.config.max_steps and not env_output.done
-                if not env_output.done:
-                    try:
-                        eval_ts = time.time()
-                        forced_reward, forced_info = evaluate_fn(env_output.obs)
-                        env_output = EnvironmentOutput(
-                            obs=env_output.obs,
-                            reward=forced_reward,
-                            done=env_output.done,
-                            info={**env_output.info, **forced_info},
-                            error=env_output.error,
-                        )
-                        forced_step = TrajectoryStep(output=env_output, start_time=eval_ts, end_time=time.time())
-                        self.storage.save_step(forced_step, trajectory.id, len(trajectory.steps))
-                        summary_proc.on_step(len(trajectory.steps), forced_step)
-                        trajectory.steps.append(forced_step)
-                    except Exception:
-                        logger.exception("Final evaluate() raised; trajectory keeps last step's reward")
-                trajectory.end_time = time.time()
-                trajectory.reward_info = {"reward": env_output.reward, "done": env_output.done, **env_output.info}
-                trajectory.summary_stats = _compute_summary_stats(trajectory)
-                self.storage.save_trajectory(trajectory)
-                summary_proc.on_episode_complete(trajectory, self.storage)
+                # 7. Drive the agent. agent.run is the canonical entry.
                 try:
-                    ep_record = EpisodeRecord.from_trajectory(
-                        trajectory,
-                        evaluation_id=self.config.output_dir.name,
-                        task_config=self.config.task_config,
-                    )
-                    ep_record.write(self.config.output_dir)
-                except Exception:
-                    logger.warning("Failed to write episode record", exc_info=True)
-                logger.info(colored(f"Episode completed in {turns} turns, reward: {env_output.reward}", "blue"))
-                final_reward = trajectory.last_env_step().reward
-                ep_status.reward = final_reward
-                status = StatusCode.OK if final_reward > 0 else StatusCode.ERROR
+                    agent.run(initial.obs, env_tool)
+                except BudgetExceeded as e:
+                    logger.info(colored(f"Budget exceeded: {e}", "yellow"))
+                    streamer.record_failure(e)
+                    max_steps_reached = True
+                except AgentStop:
+                    # Clean episode end from the task side — agent emitted
+                    # STOP_ACTION (final_step) or task.finished() returned True.
+                    # Not a failure; just proceed to finalization.
+                    logger.info(colored("Task finished", "blue"))
+                except Exception as e:
+                    # Agent / env exceptions during the run. Permanent
+                    # provider errors propagate after finalization so the
+                    # runner stops the retry budget.
+                    logger.exception(f"Error during agent.run: {e}")
+                    streamer.record_failure(e)
+                    raise
+
+                # 7. Terminal evaluation. cube-standard's Task.evaluate
+                # accepts obs=None — tasks track their own final state
+                # internally (`self._latest_obs` set inside their own
+                # `step()`). Errors propagate so callers see the real
+                # exception; `finally` still finalizes the metadata.
+                # is_terminal=True distinguishes this from any step-wise
+                # EvaluationEvents emitted by MonitoredTool during the run.
+                # If evaluate raises, record the failure as an AgentEvent
+                # (so the trajectory carries the error) before re-raising —
+                # the outer except below tags status and propagates to the
+                # runner.
+                try:
+                    reward, info = task.evaluate()
+                except Exception as e:
+                    streamer.record_failure(e)
+                    raise
+                streamer.record_evaluation(reward, info, is_terminal=True)
+
+                # Finalize: write the TrajectoryMetadata at episode end
+                # with summary_stats + reward_info + end_time, then
+                # update the experiment-level summary and emit the
+                # eval record.
+                end_time = time.time()
+                final_metadata = {**meta.metadata, **metadata_updates}
+                meta = meta.model_copy(
+                    update={
+                        "metadata": final_metadata,
+                        "end_time": end_time,
+                        "reward_info": {"reward": reward, "done": True, **info},
+                        "summary_stats": streamer.summary_stats(duration=end_time - start_time, final_reward=reward),
+                    }
+                )
+                self.storage.finalize_episode(meta)
+                self.storage.update_experiment_summary(meta)
+                if self.config.write_eval_log:
+                    try:
+                        ep_record = EpisodeRecord.from_view(
+                            self.storage.load_episode(meta.id),
+                            evaluation_id=self.config.output_dir.name,
+                            task_config=self.config.task_config,
+                        )
+                        ep_record.write(self.config.output_dir)
+                    except Exception:
+                        logger.warning("Failed to write episode record", exc_info=True)
+
+                logger.info(colored(f"Episode completed, reward: {reward}", "blue"))
+                ep_status.reward = reward
+                status = StatusCode.OK if reward > 0 else StatusCode.ERROR
                 episode_span.set_status(status)
+
             ep_status.status = "MAX_STEPS_REACHED" if max_steps_reached else "COMPLETED"
         except Exception as e:
             logger.exception(f"Error during agent run: {e}")
-            ep_status.status = "FAILED"
+            # Permanent provider errors (bad model name, bad key,
+            # malformed request) and infra-incompatibility will fail
+            # identically on retry — mark them terminal & non-retriable.
+            permanent = is_permanent_llm_error(e) or isinstance(e, IncompatibleInfraError)
+            ep_status.status = "INVALID_CONFIG" if permanent else "FAILED"
             ep_status.error_type = type(e).__name__
             ep_status.error_message = str(e)[:500]
             raise e
         finally:
+            # Persist summary_stats on terminal failure paths too. With
+            # it on the metadata stub, the XRay tables render correct
+            # step/token/cost stats without loading any events.
+            if meta is not None and streamer is not None and meta.summary_stats is None:
+                try:
+                    end = meta.end_time or time.time()
+                    meta = meta.model_copy(
+                        update={
+                            "summary_stats": streamer.summary_stats(
+                                duration=end - (meta.start_time or end),
+                                final_reward=streamer.final_reward,
+                            ),
+                        }
+                    )
+                    self.storage.finalize_episode(meta)
+                except Exception:
+                    logger.exception("Failed to persist summary_stats on terminal path")
             ep_status.ended_at = time.time()
             ep_status.last_heartbeat_at = ep_status.ended_at
             try:
                 self.storage.write_episode_status(trajectory_id, ep_status)
             except Exception:
                 logger.exception("Failed to write final episode status")
-            close_fn()
+            # task.close is best-effort; avoid masking the real exception.
+            try:
+                if "task" in locals():
+                    task.close()
+            except Exception:
+                logger.exception("Failed to close task")
             tracer.shutdown()
-        return trajectory
-
-    def log_agent_output(self, turns: int, agent_output: AgentOutput) -> None:
-        for llm_call in agent_output.llm_calls:
-            if llm_call.output.content:
-                logger.info(colored(f"Turn {turns} LLM Response: {llm_call.output.content}", "green"))
-            if hasattr(llm_call.output, "reasoning_content") and llm_call.output.reasoning_content:
-                logger.info(colored(f"Turn {turns} LLM Reasoning: {llm_call.output.reasoning_content}", "cyan"))
-            if hasattr(llm_call.output, "thinking_blocks") and llm_call.output.thinking_blocks:
-                for block in llm_call.output.thinking_blocks:
-                    logger.info(colored(f"Turn {turns} LLM Thinking Block: {block}", "cyan"))
-        actions_summary = [a.name for a in agent_output.actions] if agent_output.actions else []
-        logger.info(colored(f"Turn {turns} Agent output: actions={actions_summary}", "magenta"))
-
-
-def _compute_summary_stats(traj: Trajectory) -> dict:
-    n_env_steps = 0
-    n_agent_steps = 0
-    total_actions = 0
-    total_llm_calls = 0
-    prompt_tokens = 0
-    completion_tokens = 0
-    cached_tokens = 0
-    cache_creation_tokens = 0
-    cost = 0.0
-
-    for step in traj.steps:
-        if isinstance(step.output, EnvironmentOutput):
-            n_env_steps += 1
-        elif isinstance(step.output, AgentOutput):
-            n_agent_steps += 1
-            total_actions += len(step.output.actions)
-            total_llm_calls += len(step.output.llm_calls)
-            for llm_call in step.output.llm_calls:
-                if llm_call.usage:
-                    prompt_tokens += llm_call.usage.prompt_tokens
-                    completion_tokens += llm_call.usage.completion_tokens
-                    cached_tokens += llm_call.usage.cached_tokens
-                    cache_creation_tokens += llm_call.usage.cache_creation_tokens
-                    cost += llm_call.usage.cost
-
-    duration = None
-    if traj.start_time is not None and traj.end_time is not None:
-        duration = traj.end_time - traj.start_time
-
-    final_reward = 0.0
-    if traj.reward_info:
-        final_reward = traj.reward_info.get("reward", 0.0)
-    else:
-        for step in reversed(traj.steps):
-            if isinstance(step.output, EnvironmentOutput):
-                final_reward = step.output.reward
-                break
-
-    return {
-        "n_env_steps": n_env_steps,
-        "n_agent_steps": n_agent_steps,
-        "total_actions": total_actions,
-        "total_llm_calls": total_llm_calls,
-        "duration": duration,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "cached_tokens": cached_tokens,
-        "cache_creation_tokens": cache_creation_tokens,
-        "cost": cost,
-        "final_reward": final_reward,
-    }
+        return self.storage.load_episode(trajectory_id)

@@ -1,5 +1,6 @@
 import json
 import time
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -159,6 +160,11 @@ class TestFileStorageWithLLMCalls:
             output=Message(role="assistant", content="Hi there!"),
         )
 
+    @pytest.mark.skip(
+        reason="AgentOutput.llm_calls field removed by the auto-recorder collapse. "
+        "LLM calls now stream as LLMCallEvent rather than being bundled into AgentOutput. "
+        "Test will be deleted alongside the V1/V2 read shims in agent-owns-loop-xray."
+    )
     def test_v2_keeps_llm_calls_inline(self, tmp_dir, sample_llm_call):
         storage = FileStorage(tmp_dir)
         agent_output = AgentOutput(
@@ -232,6 +238,11 @@ class TestFileStorageLoad:
         with pytest.raises(FileNotFoundError, match="Trajectory metadata not found"):
             storage.load_trajectory("nonexistent")
 
+    @pytest.mark.skip(
+        reason="AgentOutput.llm_calls field removed by the auto-recorder collapse. "
+        "Inline-llm_calls resolution is no longer a code path. "
+        "Test will be deleted alongside the V1/V2 read shims in agent-owns-loop-xray."
+    )
     def test_load_trajectory_resolves_inline_llm_calls(self, tmp_dir):
         storage = FileStorage(tmp_dir)
         llm_call = LLMCall(
@@ -343,9 +354,12 @@ class TestFileStorageRoundtrip:
         traj.steps.append(
             TrajectoryStep(output=EnvironmentOutput(obs=obs1, reward=0.0), start_time=100.0, end_time=101.0)
         )
+        # AgentOutput.llm_calls is gone — kept as a local reference for
+        # the inline-write portion of this test, but it's not part of the
+        # AgentOutput shape anymore.
+        _ = llm_call
         agent_output = AgentOutput(
             actions=[Action(id="act_1", name="click", arguments={"element": "btn"})],
-            llm_calls=[llm_call],
         )
         traj.steps.append(TrajectoryStep(output=agent_output, start_time=101.0, end_time=102.0))
         obs2 = Observation.from_text("Task completed")
@@ -371,8 +385,7 @@ class TestFileStorageRoundtrip:
         assert isinstance(step1.output, AgentOutput)
         assert len(step1.output.actions) == 1
         assert step1.output.actions[0].name == "click"
-        assert len(step1.output.llm_calls) == 1
-        assert step1.output.llm_calls[0].output.content == "I'll click the button."
+        # llm_calls removed from AgentOutput by the auto-recorder collapse.
 
         step2 = loaded.steps[2]
         assert isinstance(step2.output, EnvironmentOutput)
@@ -549,6 +562,57 @@ class TestFileStorageOverwrite:
         with pytest.raises(FileExistsError):
             storage2.save_trajectory(traj)
 
+    def test_archive_preserves_episode_config_for_retry(
+        self, tmp_dir, mock_agent_config, mock_cube_task_config
+    ) -> None:
+        """Archiving an episode dir must leave episode_config.json behind so the
+        retry pipeline (list_episode_configs / _episode_config_dirs) still finds
+        the task. The config is written once at experiment prep and is not
+        re-saved on retry.
+        """
+        from cube_harness.episode import EpisodeConfig
+
+        storage = FileStorage(tmp_dir)
+        episode_config = EpisodeConfig(
+            id=0,
+            agent_config=mock_agent_config,
+            task_config=mock_cube_task_config,
+            exp_name="test_exp",
+            output_dir=tmp_dir,
+            max_steps=100,
+        )
+        storage.save_episode_config(episode_config)
+        traj_id = f"{mock_cube_task_config.task_id}_ep0"
+        traj = Trajectory(id=traj_id, metadata={"task_id": mock_cube_task_config.task_id, "agent_name": "A"})
+        storage.save_trajectory(traj)
+
+        ep_dir = storage._episode_dir(traj_id)
+        storage._archive_episode(ep_dir)
+
+        episodes_dir = Path(tmp_dir) / "episodes"
+        archived = [d for d in episodes_dir.iterdir() if ".archived_" in d.name]
+        assert len(archived) == 1
+        assert (archived[0] / "episode_config.json").exists()
+        assert ep_dir.exists()
+        assert (ep_dir / "episode_config.json").exists()
+        assert ep_dir in list(storage._episode_config_dirs())
+
+    def test_archive_no_config_leaves_no_dir(self, tmp_dir) -> None:
+        """If the episode dir has no episode_config.json (e.g. legacy run), archive
+        should still rename the dir without creating an empty replacement.
+        """
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1", "agent_name": "A"})
+        storage.save_trajectory(traj)
+
+        ep_dir = storage._episode_dir("task_1_ep0")
+        storage._archive_episode(ep_dir)
+
+        assert not ep_dir.exists()
+        episodes_dir = Path(tmp_dir) / "episodes"
+        archived = [d for d in episodes_dir.iterdir() if ".archived_" in d.name]
+        assert len(archived) == 1
+
 
 class TestLoadTrajectoryMetadata:
     def test_load_metadata_returns_trajectory_with_no_steps(self, tmp_dir: Path) -> None:
@@ -724,7 +788,72 @@ class TestSummaryStats:
         assert summary["total_prompt_tokens"] == 3000
         assert summary["total_cost"] == pytest.approx(0.15)
 
+    def test_experiment_summary_marks_error_via_summary_stats(self, tmp_dir: Path) -> None:
+        """Post-stream refactor, ``trajectory.steps`` is empty when the runner calls into
+        ``update_experiment_summary``. Error detection must read
+        ``summary_stats['error_type']`` (captured incrementally by EventStreamer) —
+        walking the in-memory step list would silently always report no error."""
+        storage = FileStorage(tmp_dir)
+        errored = Trajectory(
+            id="task_2_ep0",
+            metadata={"task_id": "task_2", "agent_name": "A"},
+            summary_stats={
+                "n_env_steps": 1,
+                "n_agent_steps": 1,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cached_tokens": 0,
+                "cache_creation_tokens": 0,
+                "cost": 0.0,
+                "final_reward": 0.0,
+                "error_type": "RuntimeError",
+            },
+            reward_info={"reward": 0.0},
+        )
+        storage.update_experiment_summary(errored)
 
+        with open(tmp_dir / "experiment_summary.json") as f:
+            summary = json.load(f)
+        assert summary["n_episodes"] == 1
+        assert summary["n_errored"] == 1
+        assert summary["n_completed"] == 0
+
+
+class TestNonNativeMetadataSerialization:
+    """Regression guard for the Decimal serialization fix.
+
+    `Trajectory.metadata` is an untyped dict, so callers (e.g. via
+    `EnvironmentOutput.info` / `extra_metadata`) can drop in non-JSON-native
+    objects such as a `Decimal`. `save_trajectory` must serialize the metadata
+    sidecar through Pydantic's json mode; a plain `model_dump()` would leave the
+    `Decimal` intact and make the subsequent `json.dumps` raise `TypeError`.
+    """
+
+    def test_decimal_in_metadata_does_not_crash_and_roundtrips(self, tmp_dir: Path) -> None:
+        storage = FileStorage(tmp_dir)
+        traj = Trajectory(
+            id="task_1_ep0",
+            metadata={"task_id": "task_1", "agent_name": "A", "cost": Decimal("0.0123")},
+        )
+
+        # Without mode="json" this call raises TypeError in json.dumps.
+        storage.save_trajectory(traj)
+
+        metadata_path = tmp_dir / "episodes" / "task_1_ep0" / "episode.metadata.json"
+        with open(metadata_path) as f:
+            data = json.load(f)
+        # Pydantic serializes Decimal to a string, preserving precision.
+        assert data["metadata"]["cost"] == "0.0123"
+
+        loaded = storage.load_trajectory_metadata("task_1_ep0")
+        assert loaded.metadata["cost"] == "0.0123"
+
+
+@pytest.mark.skip(
+    reason="SummaryProcessor was folded into EventStreamer; episode_summary.jsonl "
+    "was dropped (per-event stats now live on TrajectoryMetadata.summary_stats). "
+    "Counter coherence under parallel emit is covered by test_summary_concurrency.py."
+)
 class TestEpisodeSummary:
     def test_summary_appended_per_step(self, tmp_dir, sample_env_output, sample_agent_output):
         from cube_harness.summary import SummaryProcessor
@@ -760,6 +889,11 @@ class TestEpisodeSummary:
         assert "tokens" in last
         assert "cost_usd" in last
 
+    @pytest.mark.skip(
+        reason="Tests SummaryProcessor.on_step folding tokens from AgentOutput.llm_calls — "
+        "that field is gone (auto-recorder collapse). The new SummaryProcessor.on_event "
+        "folds tokens from LLMCallEvent; see tests/test_summary_concurrency.py for coverage."
+    )
     def test_summary_tracks_running_totals(self, tmp_dir):
         from cube_harness.summary import SummaryProcessor
 
@@ -819,19 +953,17 @@ class TestMsgpackZstFormat:
         assert raw[:4] != b'{"_t'
 
     def test_compression_reduces_size(self, tmp_dir):
+        """Verify the msgpack+zstd step writer actually compresses.
+
+        AgentOutput post-auto-recorder no longer bundles LLMCalls, so
+        the payload is smaller — beef up the action arguments to keep
+        the compression delta visible (a few KB of repetitive text in
+        a tool arg compresses well).
+        """
         storage = FileStorage(tmp_dir)
-        llm_call = LLMCall(
-            id="call_1",
-            llm_config=LLMConfig(model_name="gpt-4"),
-            prompt=Prompt(
-                messages=[{"role": "system", "content": "You are helpful. " * 200}],
-                tools=[{"type": "function", "function": {"name": f"tool_{i}", "parameters": {}}} for i in range(20)],
-            ),
-            output=Message(role="assistant", content="I will help you. " * 100),
-        )
+        big_text = "You are helpful. " * 500  # ~8.5 KB of repetitive content
         agent_output = AgentOutput(
-            actions=[Action(name="click", arguments={"element": "btn"})],
-            llm_calls=[llm_call],
+            actions=[Action(name="echo", arguments={"text": big_text, "ctx": big_text})],
         )
         traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1", "agent_name": "A"})
         traj.steps.append(TrajectoryStep(output=agent_output))
@@ -1044,6 +1176,11 @@ class TestV1BackwardCompat:
         ids = storage.list_trajectory_ids()
         assert set(ids) == {"traj_0", "traj_1"}
 
+    @pytest.mark.skip(
+        reason="Tests V1 inline-llm_call reference resolution into AgentOutput.llm_calls — "
+        "that field is gone (auto-recorder collapse). V1 legacy reads now degrade to "
+        "actions-only AgentOutput; full V1 removal is the agent-owns-loop-xray follow-up."
+    )
     def test_v1_with_llm_call_refs(self, tmp_dir: Path) -> None:
         traj_dir = tmp_dir / "trajectories"
         traj_dir.mkdir(parents=True, exist_ok=True)
@@ -1110,6 +1247,11 @@ class TestV1BackwardCompat:
         assert ids == {"old_traj", "task_1_ep0"}
 
 
+@pytest.mark.skip(
+    reason="SummaryProcessor + episode_summary.jsonl dropped. "
+    "Episode lifecycle status now lives in status.json (see test_episode_status.py); "
+    "per-episode totals live in summary_stats on TrajectoryMetadata."
+)
 class TestEpisodeSummaryStatus:
     def test_final_line_written_on_complete(self, tmp_dir, sample_env_output):
         from cube_harness.summary import EpisodeStatus, StepSummary, SummaryProcessor
@@ -1193,19 +1335,35 @@ class TestFailureTextInjection:
         loaded = storage.load_trajectory("task_1_ep0")
         assert loaded.metadata.get("_failure_text") == "crash trace"
 
-    def test_list_ids_with_mtime_uses_failure_txt_mtime(self, tmp_dir: Path) -> None:
-        """list_trajectory_ids_with_mtime returns failure.txt mtime when it's newer."""
+    def test_list_ids_with_mtime_advances_on_dir_writes(self, tmp_dir: Path) -> None:
+        """list_trajectory_ids_with_mtime keys off the episode-dir mtime, which advances on
+        any write inside the dir — including failure.txt and, crucially, a status.json
+        rewrite (how the live viewer detects status-only transitions like RUNNING→STALE)."""
         storage = FileStorage(tmp_dir)
         traj = Trajectory(id="task_1_ep0", metadata={"task_id": "task_1"})
         storage.save_trajectory(traj)
-        time.sleep(0.01)  # ensure different mtime
-        failure_path = storage._episode_dir("task_1_ep0") / "failure.txt"
-        failure_path.write_text("crash")
+        before = storage.list_trajectory_ids_with_mtime()["task_1_ep0"]
 
-        mtimes = storage.list_trajectory_ids_with_mtime()
-        assert mtimes["task_1_ep0"] >= failure_path.stat().st_mtime
+        time.sleep(0.01)
+        (storage._episode_dir("task_1_ep0") / "failure.txt").write_text("crash")
+        after_failure = storage.list_trajectory_ids_with_mtime()["task_1_ep0"]
+        assert after_failure > before
+
+        time.sleep(0.01)
+        storage.write_episode_status(
+            "task_1_ep0",
+            EpisodeStatus(status="STALE", task_id="task_1", episode_id=0, started_at=1.0),
+        )
+        after_status = storage.list_trajectory_ids_with_mtime()["task_1_ep0"]
+        assert after_status > after_failure
 
 
+@pytest.mark.skip(
+    reason="results.EpisodeResult.summary/status historically read from the "
+    "now-deleted episode_summary.jsonl + SummaryProcessor. The few production "
+    "consumers (scripts/experiments_report.py) only use ExperimentResult's "
+    "rolled-up summary() (still tested in TestExperimentResultSummary)."
+)
 class TestEpisodeResultAPI:
     def _make_episode(self, tmp_dir, sample_env_output, sample_agent_output):
         from cube_harness.summary import SummaryProcessor
@@ -1298,6 +1456,11 @@ class TestEpisodeResultAPI:
         assert record.status == EpisodeStatus.DONE
 
 
+@pytest.mark.skip(
+    reason="EpisodeRecord built via results.EpisodeResult.get_exp_record() — "
+    "uses the dropped EpisodeStatus enum surface. Skipped alongside "
+    "TestEpisodeResultAPI."
+)
 class TestExperimentResultGetRecords:
     def test_get_records(self, tmp_dir, sample_env_output):
         from cube_harness.results import EpisodeRecord, ExperimentResult

@@ -28,7 +28,6 @@ def _build_execution_info(row: dict[str, Any]) -> dict[str, Any]:
     """
     return {
         "problem_statement": row["problem_statement"],
-        "hints_text": row.get("hints_text", ""),
         "patch": row["patch"],
         "test_patch": row["test_patch"],
         "fail_to_pass": json.loads(row["FAIL_TO_PASS"])
@@ -55,7 +54,6 @@ class SWEBenchVerifiedBenchmark(Benchmark["SWEBenchVerifiedBenchmarkConfig"]):
     def _setup(self) -> None:
         """Publish the shared InfraConfig to runtime_context; containers are launched per-task."""
         if self._infra is not None:
-            self._infra.cleanup_stale()
             self._runtime_context["infra"] = self._infra
         logger.info(
             "SWEBenchVerifiedBenchmark ready with %d tasks (infra=%s)",
@@ -86,7 +84,6 @@ class SWEBenchVerifiedBenchmarkConfig(BenchmarkConfig[SWEBenchVerifiedTaskMetada
     benchmark_class: ClassVar[type[Benchmark]] = SWEBenchVerifiedBenchmark
 
     # User-configurable fields
-    include_hints: bool = False
     oracle_mode: bool = False
 
     # ------------------------------------------------------------------
@@ -153,11 +150,47 @@ class SWEBenchVerifiedBenchmarkConfig(BenchmarkConfig[SWEBenchVerifiedTaskMetada
         return cast(SWEBenchVerifiedBenchmark, super().make(infra=infra or LocalInfraConfig()))
 
     def get_task_configs(self) -> Generator[SWEBenchVerifiedTaskConfig, None, None]:
-        """Yield TaskConfigs with include_hints and oracle_mode forwarded from benchmark settings."""
+        """Yield TaskConfigs with oracle_mode forwarded from benchmark settings."""
         for tm in self.tasks().values():
             yield SWEBenchVerifiedTaskConfig(
                 metadata=tm,
                 tool_config=self.tool_config,
-                include_hints=self.include_hints,
                 oracle_mode=self.oracle_mode,
             )
+
+
+# ---------------------------------------------------------------------------
+# Tasks that require a root container (cube-harness#446)
+# ---------------------------------------------------------------------------
+
+# SWE-bench images are built ``USER root``. Most tasks run fine on a non-root infra,
+# but a few ship a root-owned, non-writable package subdir (e.g. ``/testbed/requests/``)
+# even when ``/testbed`` itself is world-writable. A non-root runtime user (the EAI
+# toolkit pins uid 13011) cannot make those files writable by any non-root means
+# (can't chmod/chown — not owner; can't rename or rm the dir — needs write on the dir),
+# so ``git apply`` of the gold patch — or any agent edit — dies with "Permission denied"
+# and a *correct* fix silently scores 0. Declaring ``container:root`` makes a non-root
+# infra report these tasks incompatible at ``BenchmarkConfig.make()`` (raises
+# ``IncompatibleInfraError`` — no spend, no silent 0); root-capable infras
+# (daytona/local/aws/azure) run them normally. Relocating the testbed is NOT a fix —
+# it regresses editable-installed repos (the import resolves to the unpatched original);
+# see cube-harness#446 and the closed #443/#205.
+#
+# Identified by the gold-patch differential (toolkit-fail + daytona-root-pass). Runtime
+# detection of the same condition is additionally covered by the fail-loud probe in
+# ``SWEBenchVerifiedTask.reset()`` (#452), which protects untagged tasks and ``force`` runs.
+#
+# This is the single source of truth: ``scripts/create_task_metadata.py`` imports it and
+# stamps ``requires={"container:root"}`` into the ``container_config`` of these tasks in the
+# generated ``task_metadata.json`` (mirrors terminalbench2 #435). The capability gate reads
+# ``container_config.requirements()`` from that metadata at ``make()`` — no runtime patching.
+TASKS_REQUIRING_ROOT: frozenset[str] = frozenset(
+    {
+        "psf__requests-1142",
+        "psf__requests-1766",
+        "psf__requests-1921",
+        "psf__requests-2931",
+        "psf__requests-5414",
+        "psf__requests-6028",
+    }
+)

@@ -31,10 +31,10 @@ from typing import Any
 # Make the package importable when executed from the cube root without venv activation.
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from cube.container import ContainerConfig
+from cube.resource import ContainerConfig
 from datasets import load_dataset
 
-from swebench_verified_cube.benchmark import SWEBenchVerifiedBenchmarkConfig, _DATASET_NAME
+from swebench_verified_cube.benchmark import TASKS_REQUIRING_ROOT, SWEBenchVerifiedBenchmarkConfig, _DATASET_NAME
 from swebench_verified_cube.task import SWEBenchVerifiedTaskMetadata
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,10 @@ def _build_task_metadata(rows: list[dict[str, Any]]) -> dict[str, SWEBenchVerifi
                 cpu_cores=2.0,
                 ram_gb=4.0,
                 disk_gb=10.0,
+                # A few images ship a root-owned package subdir a non-root infra can't patch
+                # (silent score=0); declaring container:root makes such infras incompatible
+                # at make(). See TASKS_REQUIRING_ROOT / cube-harness#446.
+                requires={"container:root"} if iid in TASKS_REQUIRING_ROOT else set(),
             ),
             repo=row["repo"],
             base_commit=row["base_commit"],

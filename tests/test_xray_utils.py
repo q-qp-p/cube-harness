@@ -6,92 +6,14 @@ import time
 from pathlib import Path
 
 import pytest
-from cube.core import Action, Content, EnvironmentOutput, Observation, StepError
-from PIL import Image
 
 from cube_harness.analyze import xray_utils
-from cube_harness.core import (
-    AgentOutput,
-    Trajectory,
-    TrajectoryStep,
-)
+from cube_harness.core import Trajectory
 from cube_harness.episode_status import STATUS_FILENAME, EpisodeStatus
-from cube_harness.llm import LLMCall, LLMConfig, Message, Prompt, Usage
 
 # ---------------------------------------------------------------------------
 # Additional fixtures (complement conftest.py)
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def red_image() -> Image.Image:
-    return Image.new("RGB", (100, 100), color="red")
-
-
-@pytest.fixture
-def env_step_with_screenshot(red_image: Image.Image) -> EnvironmentOutput:
-    obs = Observation(contents=[Content.from_data(red_image, name="screenshot")])
-    return EnvironmentOutput(obs=obs, reward=0.0, done=False)
-
-
-@pytest.fixture
-def env_step_with_axtree() -> EnvironmentOutput:
-    axtree_text = "RootWebArea 'Example'\n  button 'Submit'"
-    obs = Observation(contents=[Content.from_data(axtree_text, name="axtree_txt")])
-    return EnvironmentOutput(obs=obs, reward=0.0, done=False)
-
-
-@pytest.fixture
-def env_step_done_success() -> EnvironmentOutput:
-    obs = Observation(contents=[Content.from_data("Done!", name="goal")])
-    return EnvironmentOutput(obs=obs, reward=1.0, done=True)
-
-
-@pytest.fixture
-def env_step_done_failure() -> EnvironmentOutput:
-    obs = Observation(contents=[Content.from_data("Failed", name="goal")])
-    return EnvironmentOutput(obs=obs, reward=0.0, done=True)
-
-
-@pytest.fixture
-def sample_llm_call() -> LLMCall:
-    config = LLMConfig(model_name="gpt-test")
-    prompt = Prompt(
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Click the button."},
-        ],
-        tools=[],
-    )
-    msg = Message(role="assistant", content="I will click the button.")
-    usage = Usage(prompt_tokens=100, completion_tokens=20, cost=0.001)
-    return LLMCall(tag="test_call", llm_config=config, prompt=prompt, output=msg, usage=usage)
-
-
-@pytest.fixture
-def agent_step_with_llm_call(sample_llm_call: LLMCall) -> AgentOutput:
-    return AgentOutput(
-        actions=[Action(id="a1", name="click", arguments={"element_id": "btn"})],
-        llm_calls=[sample_llm_call],
-    )
-
-
-@pytest.fixture
-def timed_trajectory(env_step_with_screenshot: EnvironmentOutput, agent_step_with_llm_call: AgentOutput) -> Trajectory:
-    """Trajectory with timing info and metadata."""
-    traj = Trajectory(
-        id="test_traj",
-        metadata={"task_id": "task_1", "agent_name": "agent_a"},
-        start_time=0.0,
-        end_time=5.0,
-        reward_info={"reward": 1.0},
-    )
-    traj.steps.append(TrajectoryStep(output=env_step_with_screenshot, start_time=0.0, end_time=1.0))
-    traj.steps.append(TrajectoryStep(output=agent_step_with_llm_call, start_time=1.0, end_time=2.0))
-    traj.steps.append(
-        TrajectoryStep(output=EnvironmentOutput(obs=Observation.from_text("done"), reward=1.0, done=True))
-    )
-    return traj
 
 
 @pytest.fixture
@@ -144,58 +66,6 @@ class TestFormatDuration:
     def test_just_below_one_second(self) -> None:
         result = xray_utils.format_duration(0.999)
         assert result == "999ms"
-
-
-# ---------------------------------------------------------------------------
-# TestGetDirectoryContents
-# ---------------------------------------------------------------------------
-
-
-class TestGetDirectoryContents:
-    def test_returns_sentinel_for_missing_dir(self, tmp_path: Path) -> None:
-        result = xray_utils.get_directory_contents(tmp_path / "nonexistent")
-        assert result == ["Select experiment directory"]
-
-    def test_returns_dirs_with_trajectories_subdir(self, tmp_path: Path) -> None:
-        exp_dir = tmp_path / "my_exp"
-        (exp_dir / "trajectories").mkdir(parents=True)
-        (exp_dir / "trajectories" / "run0.metadata.json").write_text("{}")
-        result = xray_utils.get_directory_contents(tmp_path)
-        assert any("my_exp" in entry for entry in result)
-
-    def test_ignores_dirs_without_trajectories(self, tmp_path: Path) -> None:
-        (tmp_path / "no_traj_dir").mkdir()
-        result = xray_utils.get_directory_contents(tmp_path)
-        assert not any("no_traj_dir" in entry for entry in result)
-
-    def test_count_is_based_on_metadata_files(self, tmp_path: Path) -> None:
-        exp_dir = tmp_path / "exp"
-        traj_dir = exp_dir / "trajectories"
-        traj_dir.mkdir(parents=True)
-        (traj_dir / "a.metadata.json").write_text("{}")
-        (traj_dir / "b.metadata.json").write_text("{}")
-        result = xray_utils.get_directory_contents(tmp_path)
-        assert any("2 trajectories" in entry for entry in result)
-
-    def test_sentinel_is_first_entry(self, tmp_path: Path) -> None:
-        result = xray_utils.get_directory_contents(tmp_path)
-        assert result[0] == "Select experiment directory"
-
-    def test_sorted_reverse_order(self, tmp_path: Path) -> None:
-        for name in ["aaa_exp", "zzz_exp"]:
-            (tmp_path / name / "trajectories").mkdir(parents=True)
-            (tmp_path / name / "trajectories" / "x.metadata.json").write_text("{}")
-        result = xray_utils.get_directory_contents(tmp_path)
-        names = [e.split(" ")[0] for e in result[1:]]
-        assert names == sorted(names, reverse=True)
-
-    def test_returns_dirs_with_flat_layout(self, tmp_path: Path) -> None:
-        exp_dir = tmp_path / "flat_exp"
-        exp_dir.mkdir()
-        (exp_dir / "run0_task_foo.metadata.json").write_text("{}")
-        (exp_dir / "run1_task_bar.metadata.json").write_text("{}")
-        result = xray_utils.get_directory_contents(tmp_path)
-        assert any("flat_exp" in entry and "2 trajectories" in entry for entry in result)
 
 
 class TestGetExperimentsTableRows:
@@ -305,6 +175,28 @@ class TestGetExperimentsTableRows:
         os.utime(ep_dir, (future, future))
         assert not xray_utils._is_cache_valid(tmp_path / "exp_e", cache.stat().st_mtime)
 
+    def test_cache_invalidated_when_submission_recorded_then_cleared(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        now = time.time()
+        exp = tmp_path / "exp_subs"
+        ep_dir = exp / "episodes" / "ep0"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "status.json").write_text(
+            json.dumps({"status": "COMPLETED", "task_id": "t0", "episode_id": 0, "started_at": now, "ended_at": now})
+        )
+        # No experiment_record.json → classifies broken; that's fine, we only care
+        # that _category tracks the submission state across cache reads.
+        cat = lambda: xray_utils.get_experiments_table_rows(tmp_path)[0]["_category"]  # noqa: E731
+        assert cat() == "broken"
+        # Record a submission: a journal decision short-circuits classify.
+        submissions.record_submitted(exp, "journal", evaluation_id="a", schema_version="1.0")
+        assert cat() == "already_submitted"  # cache must NOT serve the stale 'broken'
+        # Roll back: deleting submissions.json must invalidate the cache too
+        # (the bug — an mtime-vs-cache check misses deletion).
+        (exp / submissions.SUBMISSIONS_FILENAME).unlink()
+        assert cat() == "broken"
+
     def test_ghost_episode_promoted_to_stale(self, tmp_path: Path) -> None:
         old_ts = time.time() - xray_utils.GHOST_TIMEOUT - 100
         ep_dir = tmp_path / "exp_f" / "episodes" / "ep0"
@@ -324,275 +216,6 @@ class TestGetExperimentsTableRows:
         updated = EpisodeStatus.read(ep_dir / STATUS_FILENAME)
         assert updated is not None
         assert updated.status == "STALE"
-
-
-# ---------------------------------------------------------------------------
-# TestGetScreenshotFromStep
-# ---------------------------------------------------------------------------
-
-
-class TestGetScreenshotFromStep:
-    def test_returns_none_for_none_input(self) -> None:
-        assert xray_utils.get_screenshot_from_step(None) is None
-
-    def test_returns_none_for_agent_output(self, agent_step_with_llm_call: AgentOutput) -> None:
-        assert xray_utils.get_screenshot_from_step(agent_step_with_llm_call) is None
-
-    def test_extracts_image_from_env_output(self, env_step_with_screenshot: EnvironmentOutput) -> None:
-        img = xray_utils.get_screenshot_from_step(env_step_with_screenshot)
-        assert isinstance(img, Image.Image)
-
-    def test_returns_none_when_no_image_content(self) -> None:
-        env_step = EnvironmentOutput(obs=Observation.from_text("no image here"))
-        assert xray_utils.get_screenshot_from_step(env_step) is None
-
-
-# ---------------------------------------------------------------------------
-# TestGetCurrentScreenshot
-# ---------------------------------------------------------------------------
-
-
-class TestGetCurrentScreenshot:
-    def test_returns_current_screenshot_for_env_step(self, env_step_with_screenshot: EnvironmentOutput) -> None:
-        img = xray_utils.get_current_screenshot(env_step_with_screenshot, None)
-        assert isinstance(img, Image.Image)
-
-    def test_falls_back_to_prev_env_step_for_agent_step(
-        self, agent_step_with_llm_call: AgentOutput, env_step_with_screenshot: EnvironmentOutput
-    ) -> None:
-        img = xray_utils.get_current_screenshot(agent_step_with_llm_call, env_step_with_screenshot)
-        assert isinstance(img, Image.Image)
-
-    def test_returns_none_when_no_screenshots(self, agent_step_with_llm_call: AgentOutput) -> None:
-        env_no_img = EnvironmentOutput(obs=Observation.from_text("no image"))
-        img = xray_utils.get_current_screenshot(agent_step_with_llm_call, env_no_img)
-        assert img is None
-
-    def test_returns_none_for_none_inputs(self) -> None:
-        assert xray_utils.get_current_screenshot(None, None) is None
-
-
-# ---------------------------------------------------------------------------
-# TestExtractObsContent
-# ---------------------------------------------------------------------------
-
-
-class TestExtractObsContent:
-    def test_finds_axtree_by_name(self, env_step_with_axtree: EnvironmentOutput) -> None:
-        result = xray_utils.extract_obs_content(env_step_with_axtree, "axtree")
-        assert result == "RootWebArea 'Example'\n  button 'Submit'"
-
-    def test_case_insensitive_match(self, env_step_with_axtree: EnvironmentOutput) -> None:
-        result = xray_utils.extract_obs_content(env_step_with_axtree, "AXTREE")
-        assert result is not None
-
-    def test_returns_none_for_agent_output(self, agent_step_with_llm_call: AgentOutput) -> None:
-        result = xray_utils.extract_obs_content(agent_step_with_llm_call, "axtree")  # type: ignore[arg-type]
-        assert result is None
-
-    def test_returns_none_when_no_match(self, env_step_with_axtree: EnvironmentOutput) -> None:
-        result = xray_utils.extract_obs_content(env_step_with_axtree, "nonexistent_key")
-        assert result is None
-
-    def test_returns_none_for_image_content(self, env_step_with_screenshot: EnvironmentOutput) -> None:
-        # screenshot content is not str, should not be returned
-        result = xray_utils.extract_obs_content(env_step_with_screenshot, "screenshot")
-        assert result is None
-
-    def test_returns_none_for_none_input(self) -> None:
-        assert xray_utils.extract_obs_content(None, "axtree") is None
-
-
-# ---------------------------------------------------------------------------
-# TestGetChatBranches
-# ---------------------------------------------------------------------------
-
-
-class TestGetChatBranches:
-    def test_returns_empty_for_env_step(self, env_step_with_axtree: EnvironmentOutput) -> None:
-        assert xray_utils.get_chat_branches(env_step_with_axtree) == {}
-
-    def test_returns_empty_for_none(self) -> None:
-        assert xray_utils.get_chat_branches(None) == {}
-
-    def test_returns_empty_when_no_llm_calls(self) -> None:
-        step = AgentOutput(actions=[], llm_calls=[])
-        assert xray_utils.get_chat_branches(step) == {}
-
-    def test_one_tab_per_call(self, sample_llm_call: LLMCall) -> None:
-        step = AgentOutput(llm_calls=[sample_llm_call])
-        assert list(xray_utils.get_chat_branches(step).keys()) == [sample_llm_call.tag]
-
-    def test_tab_name_is_call_tag(self, agent_step_with_llm_call: AgentOutput, sample_llm_call: LLMCall) -> None:
-        branches = xray_utils.get_chat_branches(agent_step_with_llm_call)
-        assert sample_llm_call.tag in branches
-
-    def test_falls_back_to_id_when_tag_empty(self) -> None:
-        config = LLMConfig(model_name="gpt-test")
-        prompt = Prompt(messages=[{"role": "user", "content": "x"}], tools=[])
-        call = LLMCall(llm_config=config, prompt=prompt, output=Message(role="assistant", content="a"), usage=Usage())
-        assert call.tag == ""
-        step = AgentOutput(llm_calls=[call])
-        assert list(xray_utils.get_chat_branches(step).keys()) == [call.id]
-
-    def test_multiple_calls_get_separate_tabs(self) -> None:
-        config = LLMConfig(model_name="gpt-test")
-        prompt = Prompt(messages=[{"role": "user", "content": "x"}], tools=[])
-        call1 = LLMCall(
-            tag="act", llm_config=config, prompt=prompt, output=Message(role="assistant", content="a"), usage=Usage()
-        )
-        call2 = LLMCall(
-            tag="summary",
-            llm_config=config,
-            prompt=prompt,
-            output=Message(role="assistant", content="s"),
-            usage=Usage(),
-        )
-        step = AgentOutput(llm_calls=[call1, call2])
-        assert list(xray_utils.get_chat_branches(step).keys()) == ["act", "summary"]
-
-    def test_contains_role_headers(self, agent_step_with_llm_call: AgentOutput, sample_llm_call: LLMCall) -> None:
-        html = xray_utils.get_chat_branches(agent_step_with_llm_call)[sample_llm_call.tag]
-        assert "system" in html
-        assert "user" in html
-        assert "assistant" in html
-
-    def test_contains_message_content(self, agent_step_with_llm_call: AgentOutput, sample_llm_call: LLMCall) -> None:
-        html = xray_utils.get_chat_branches(agent_step_with_llm_call)[sample_llm_call.tag]
-        assert "You are a helpful assistant." in html
-        assert "Click the button." in html
-
-    def test_contains_llm_response(self, agent_step_with_llm_call: AgentOutput, sample_llm_call: LLMCall) -> None:
-        html = xray_utils.get_chat_branches(agent_step_with_llm_call)[sample_llm_call.tag]
-        assert "I will click the button." in html
-
-    def test_renders_tool_calls_in_assistant_response(self, sample_llm_call: LLMCall) -> None:
-        from litellm.types.utils import ChatCompletionMessageToolCall, Function
-
-        sample_llm_call.output = Message(
-            role="assistant",
-            content=None,
-            tool_calls=[
-                ChatCompletionMessageToolCall(
-                    id="tc1", function=Function(name="browser_click", arguments='{"bid": "42"}'), type="function"
-                )
-            ],
-        )
-        step = AgentOutput(llm_calls=[sample_llm_call])
-        html = xray_utils.get_chat_branches(step)[sample_llm_call.tag]
-        assert "browser_click" in html
-        assert "42" in html
-
-    def test_long_content_collapses(self, sample_llm_call: LLMCall) -> None:
-        long_content = "x" * (xray_utils._COLLAPSE_THRESHOLD + 1)
-        sample_llm_call.prompt.messages[1] = {"role": "user", "content": long_content}
-        step = AgentOutput(llm_calls=[sample_llm_call])
-        html = xray_utils.get_chat_branches(step)[sample_llm_call.tag]
-        assert "<details>" in html  # collapsed block has no "open" attribute
-        assert long_content[:50] in html  # content is still present
-
-    def test_handles_list_content_with_image(self, sample_llm_call: LLMCall) -> None:
-        sample_llm_call.prompt.messages[1] = {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Here is a screenshot:"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
-            ],
-        }
-        step = AgentOutput(llm_calls=[sample_llm_call])
-        html = xray_utils.get_chat_branches(step)[sample_llm_call.tag]
-        assert "Here is a screenshot:" in html
-        assert "data:image/png;base64,abc" in html
-        assert "<img" in html
-
-
-# ---------------------------------------------------------------------------
-# TestGetStepErrorMarkdown
-# ---------------------------------------------------------------------------
-
-
-class TestGetStepErrorMarkdown:
-    def test_no_error_returns_message(self) -> None:
-        env_step = EnvironmentOutput(obs=Observation.from_text("ok"))
-        result = xray_utils.get_step_error_markdown(env_step)
-        assert "No errors" in result
-
-    def test_none_returns_message(self) -> None:
-        result = xray_utils.get_step_error_markdown(None)
-        assert "No errors" in result
-
-    def test_agent_output_error(self) -> None:
-        err = StepError(error_type="ValueError", exception_str="bad value", stack_trace="traceback here")
-        step = AgentOutput(error=err)
-        result = xray_utils.get_step_error_markdown(step)
-        assert "ValueError" in result
-        assert "bad value" in result
-        assert "traceback here" in result
-
-    def test_env_output_error(self) -> None:
-        err = StepError(error_type="TimeoutError", exception_str="timed out", stack_trace="...")
-        env_step = EnvironmentOutput(obs=Observation.from_text("failed"), error=err)
-        result = xray_utils.get_step_error_markdown(env_step)
-        assert "TimeoutError" in result
-
-    def test_env_info_error_fallback(self) -> None:
-        env_step = EnvironmentOutput(obs=Observation.from_text("ok"), info={"error": "Something went wrong"})
-        result = xray_utils.get_step_error_markdown(env_step)
-        assert "Something went wrong" in result
-
-
-# ---------------------------------------------------------------------------
-# TestGetStepLogsMarkdown
-# ---------------------------------------------------------------------------
-
-
-class TestGetStepLogsMarkdown:
-    def test_returns_no_log_message_when_empty(self) -> None:
-        env_step = EnvironmentOutput(obs=Observation.from_text("ok"))
-        result = xray_utils.get_step_logs_markdown(env_step, None)
-        assert "No log information" in result
-
-    def test_shows_info_keys(self) -> None:
-        env_step = EnvironmentOutput(obs=Observation.from_text("ok"), info={"url": "https://example.com"})
-        result = xray_utils.get_step_logs_markdown(env_step, None)
-        assert "url" in result
-        assert "example.com" in result
-
-    def test_excludes_error_and_message_keys(self) -> None:
-        env_step = EnvironmentOutput(
-            obs=Observation.from_text("ok"),
-            info={"error": "bad", "message": "task done", "url": "https://x.com"},
-        )
-        result = xray_utils.get_step_logs_markdown(env_step, None)
-        assert "error" not in result
-        assert "message" not in result or "url" in result
-
-    def test_shows_trajectory_metadata(self) -> None:
-        env_step = EnvironmentOutput(obs=Observation.from_text("ok"))
-        traj = Trajectory(id="t1", metadata={"agent_name": "test_agent", "task_id": "task_1"})
-        result = xray_utils.get_step_logs_markdown(env_step, traj)
-        assert "test_agent" in result
-        assert "task_1" in result
-
-    def test_agent_output_shows_only_metadata(self, agent_step_with_llm_call: AgentOutput) -> None:
-        traj = Trajectory(id="t1", metadata={"agent_name": "agent_a"})
-        result = xray_utils.get_step_logs_markdown(agent_step_with_llm_call, traj)
-        assert "agent_a" in result
-
-    def test_shows_failure_text_for_real_trajectory(self) -> None:
-        """A real (non-missing) trajectory with _failure_text shows System Error section."""
-        traj = Trajectory(id="t1", metadata={"task_id": "task_x", "_failure_text": "Ray actor died"})
-        result = xray_utils.get_step_logs_markdown(None, traj)
-        assert "System Error" in result
-        assert "Ray actor died" in result
-
-    def test_failure_text_not_duplicated_in_metadata(self) -> None:
-        """_failure_text should not appear in the Trajectory Metadata JSON block."""
-        env_step = EnvironmentOutput(obs=Observation.from_text("ok"))
-        traj = Trajectory(id="t1", metadata={"task_id": "task_x", "_failure_text": "some trace"})
-        result = xray_utils.get_step_logs_markdown(env_step, traj)
-        # Appears once (in the System Error block), not twice in the metadata JSON
-        assert result.count("some trace") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -713,38 +336,54 @@ class TestTrajectoryStatusFromEpisodeStatus:
 # ---------------------------------------------------------------------------
 
 
+def _traj_with_summary_stats() -> Trajectory:
+    """A terminal trajectory carrying summary_stats (as EventStreamer persists it)."""
+    return Trajectory(
+        id="summarised",
+        metadata={"task_id": "task_1", "agent_name": "agent_a", "_episode_status": "COMPLETED"},
+        reward_info={"reward": 1.0},
+        summary_stats={
+            "n_env_steps": 2,
+            "n_agent_steps": 1,
+            "total_actions": 1,
+            "total_llm_calls": 1,
+            "duration": 5.0,
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "cached_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost": 0.001,
+            "final_reward": 1.0,
+        },
+    )
+
+
 class TestComputeTrajectoryStats:
-    def test_empty_trajectory(self) -> None:
-        traj = Trajectory(id="empty")
-        stats = xray_utils.compute_trajectory_stats(traj)
+    def test_returns_summary_stats_verbatim(self) -> None:
+        traj = _traj_with_summary_stats()
+        assert xray_utils.compute_trajectory_stats(traj) == traj.summary_stats
+
+    def test_zeroed_dict_when_no_summary_stats(self) -> None:
+        stats = xray_utils.compute_trajectory_stats(Trajectory(id="stub"))
         assert stats["n_env_steps"] == 0
-        assert stats["n_agent_steps"] == 0
         assert stats["total_actions"] == 0
         assert stats["final_reward"] == 0.0
+        assert stats["cost"] == 0.0
         assert stats["duration"] is None
 
-    def test_counts_env_and_agent_steps(self, timed_trajectory: Trajectory) -> None:
-        stats = xray_utils.compute_trajectory_stats(timed_trajectory)
+    def test_empty_summary_stats_falls_back_to_zeroed(self) -> None:
+        traj = Trajectory(id="stub", summary_stats={})
+        assert xray_utils.compute_trajectory_stats(traj)["n_env_steps"] == 0
+
+    def test_token_and_step_counts_from_summary_stats(self) -> None:
+        stats = xray_utils.compute_trajectory_stats(_traj_with_summary_stats())
         assert stats["n_env_steps"] == 2
         assert stats["n_agent_steps"] == 1
-
-    def test_duration_from_timing(self, timed_trajectory: Trajectory) -> None:
-        stats = xray_utils.compute_trajectory_stats(timed_trajectory)
-        assert stats["duration"] == pytest.approx(5.0)
-
-    def test_final_reward_from_reward_info(self, timed_trajectory: Trajectory) -> None:
-        stats = xray_utils.compute_trajectory_stats(timed_trajectory)
-        assert stats["final_reward"] == 1.0
-
-    def test_aggregates_token_usage(self, timed_trajectory: Trajectory) -> None:
-        stats = xray_utils.compute_trajectory_stats(timed_trajectory)
-        # The agent step has usage: prompt=100, completion=20
         assert stats["prompt_tokens"] == 100
         assert stats["completion_tokens"] == 20
-
-    def test_total_llm_calls(self, timed_trajectory: Trajectory) -> None:
-        stats = xray_utils.compute_trajectory_stats(timed_trajectory)
         assert stats["total_llm_calls"] == 1
+        assert stats["duration"] == pytest.approx(5.0)
+        assert stats["final_reward"] == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -756,8 +395,8 @@ class TestComputeExperimentStats:
     def test_empty_list_returns_empty_string(self) -> None:
         assert xray_utils.compute_experiment_stats([]) == ""
 
-    def test_single_finished_trajectory(self, timed_trajectory: Trajectory) -> None:
-        result = xray_utils.compute_experiment_stats([timed_trajectory])
+    def test_single_finished_trajectory(self) -> None:
+        result = xray_utils.compute_experiment_stats([_traj_with_summary_stats()])
         assert "1" in result
         assert "completed" in result.lower()
 
@@ -774,12 +413,12 @@ class TestComputeExperimentStats:
         assert "Running" in result
         assert "Failed" not in result
 
-    def test_computes_success_rate(self, timed_trajectory: Trajectory) -> None:
-        result = xray_utils.compute_experiment_stats([timed_trajectory])
+    def test_computes_success_rate(self) -> None:
+        result = xray_utils.compute_experiment_stats([_traj_with_summary_stats()])
         assert "Success Rate" in result
 
-    def test_shows_token_totals(self, timed_trajectory: Trajectory) -> None:
-        result = xray_utils.compute_experiment_stats([timed_trajectory])
+    def test_shows_token_totals(self) -> None:
+        result = xray_utils.compute_experiment_stats([_traj_with_summary_stats()])
         assert "prompt" in result
 
 
@@ -787,14 +426,15 @@ class TestRewardMeanStderr:
     def test_empty_returns_zeros(self) -> None:
         assert xray_utils._reward_mean_stderr([]) == (0.0, 0.0)
 
-    def test_binary_uses_sample_formula(self) -> None:
-        # 3 successes / 4 trials → p=0.75, stderr = std(ddof=1)/sqrt(n)
+    def test_binary_uses_binomial_formula(self) -> None:
+        # 3 successes / 4 trials → p=0.75, binomial stderr = sqrt(p*(1-p)/n).
+        # _reward_mean_stderr now delegates to analyze.stats.reward_mean_stderr,
+        # which auto-selects binomial SE for binary data (same as scripts/experiments_report.py).
         rewards = [1.0, 1.0, 1.0, 0.0]
         mean, stderr = xray_utils._reward_mean_stderr(rewards)
         n = len(rewards)
         assert mean == pytest.approx(0.75)
-        expected_var = sum((r - mean) ** 2 for r in rewards) / (n - 1)
-        assert stderr == pytest.approx((expected_var / n) ** 0.5)
+        assert stderr == pytest.approx((mean * (1 - mean) / n) ** 0.5)
 
     def test_continuous_uses_sample_formula(self) -> None:
         rewards = [0.2, 0.4, 0.6, 0.8]
@@ -817,8 +457,9 @@ class TestBuildAgentTable:
     def test_empty_list(self) -> None:
         assert xray_utils.build_agent_table([]) == []
 
-    def test_single_agent(self, timed_trajectory: Trajectory) -> None:
-        rows = xray_utils.build_agent_table([timed_trajectory])
+    def test_single_agent(self) -> None:
+        traj = Trajectory(id="t", metadata={"agent_name": "agent_a", "task_id": "task_1"})
+        rows = xray_utils.build_agent_table([traj])
         assert len(rows) == 1
         assert rows[0]["agent_name"] == "agent_a"
 
@@ -984,391 +625,6 @@ class TestBuildTrajectoryTable:
 
 
 # ---------------------------------------------------------------------------
-# TestComputeStepWidth
-# ---------------------------------------------------------------------------
-
-
-class TestComputeStepWidth:
-    def test_returns_min_width_for_none_duration(self) -> None:
-        result = xray_utils._compute_step_width(None, 0.0, 1.0)
-        assert result == xray_utils._MIN_WIDTH
-
-    def test_returns_min_width_when_min_equals_max(self) -> None:
-        result = xray_utils._compute_step_width(0.5, 0.5, 0.5)
-        assert result == xray_utils._MIN_WIDTH
-
-    def test_returns_min_width_for_min_duration(self) -> None:
-        result = xray_utils._compute_step_width(0.0, 0.0, 10.0)
-        assert result == xray_utils._MIN_WIDTH
-
-    def test_returns_max_width_for_max_duration(self) -> None:
-        result = xray_utils._compute_step_width(10.0, 0.0, 10.0)
-        assert result == xray_utils._MAX_WIDTH
-
-    def test_scales_linearly_between_min_and_max(self) -> None:
-        min_w = xray_utils._MIN_WIDTH
-        max_w = xray_utils._MAX_WIDTH
-        mid = xray_utils._compute_step_width(5.0, 0.0, 10.0)
-        assert min_w < mid < max_w
-        expected = int(min_w + 0.5 * (max_w - min_w))
-        assert mid == expected
-
-
-# ---------------------------------------------------------------------------
-# TestGenerateTimelineHtml
-# ---------------------------------------------------------------------------
-
-
-class TestGenerateTimelineHtml:
-    def test_empty_trajectory_returns_placeholder(self) -> None:
-        traj = Trajectory(id="empty")
-        result = xray_utils.generate_timeline_html(traj, 0)
-        assert "No trajectory loaded" in result
-
-    def test_none_trajectory_returns_placeholder(self) -> None:
-        result = xray_utils.generate_timeline_html(None, 0)
-        assert "No trajectory loaded" in result
-
-    def test_contains_step_numbers(self, timed_trajectory: Trajectory) -> None:
-        result = xray_utils.generate_timeline_html(timed_trajectory, 0)
-        # Step 1, 2, 3 should appear as text in segments
-        assert ">1<" in result
-        assert ">2<" in result
-
-    def test_current_step_has_gold_border(self, timed_trajectory: Trajectory) -> None:
-        result = xray_utils.generate_timeline_html(timed_trajectory, 0)
-        assert xray_utils._CURRENT_BORDER_COLOR in result
-
-    def test_different_colors_for_env_and_agent(self, timed_trajectory: Trajectory) -> None:
-        result = xray_utils.generate_timeline_html(timed_trajectory, 0)
-        assert xray_utils._ENV_COLOR in result
-        assert xray_utils._AGENT_COLOR in result
-
-    def test_done_step_has_success_border(self) -> None:
-        env_done = EnvironmentOutput(obs=Observation.from_text("done"), reward=1.0, done=True)
-        traj = Trajectory(id="t")
-        traj.steps.append(TrajectoryStep(output=env_done))
-        result = xray_utils.generate_timeline_html(traj, 0)
-        assert xray_utils._SUCCESS_BORDER_COLOR in result
-
-    def test_failed_step_has_failure_border(self) -> None:
-        env_failed = EnvironmentOutput(obs=Observation.from_text("failed"), reward=0.0, done=True)
-        traj = Trajectory(id="t")
-        traj.steps.append(TrajectoryStep(output=env_failed))
-        result = xray_utils.generate_timeline_html(traj, 0)
-        assert xray_utils._FAILURE_BORDER_COLOR in result
-
-    def test_legend_present(self, timed_trajectory: Trajectory) -> None:
-        result = xray_utils.generate_timeline_html(timed_trajectory, 0)
-        assert "Env" in result
-        assert "Agent" in result
-        assert "Current" in result
-
-
-# ---------------------------------------------------------------------------
-# TestGetStepDetailsMarkdown
-# ---------------------------------------------------------------------------
-
-
-class TestGetStepDetailsMarkdown:
-    def test_none_step_returns_placeholder(self) -> None:
-        result = xray_utils.get_step_details_markdown(None, None)
-        assert "No step selected" in result
-
-    def test_env_step_shows_reward(self, env_step_done_success: EnvironmentOutput) -> None:
-        result = xray_utils.get_step_details_markdown(env_step_done_success, None)
-        assert "Reward" in result
-        assert "1.00" in result
-
-    def test_env_step_shows_done_status(self, env_step_done_success: EnvironmentOutput) -> None:
-        result = xray_utils.get_step_details_markdown(env_step_done_success, None)
-        assert "Success" in result
-
-    def test_agent_step_shows_actions(self, agent_step_with_llm_call: AgentOutput) -> None:
-        result = xray_utils.get_step_details_markdown(agent_step_with_llm_call, None)
-        assert "click" in result
-        assert "btn" in result
-
-    def test_agent_step_shows_token_usage(self, agent_step_with_llm_call: AgentOutput) -> None:
-        result = xray_utils.get_step_details_markdown(agent_step_with_llm_call, None)
-        assert "100" in result  # prompt_tokens
-
-    def test_includes_duration_when_timing_available(self, agent_step_with_llm_call: AgentOutput) -> None:
-        traj_step = TrajectoryStep(output=agent_step_with_llm_call, start_time=0.0, end_time=2.5)
-        result = xray_utils.get_step_details_markdown(agent_step_with_llm_call, traj_step)
-        assert "2.5s" in result
-
-    def test_env_step_shows_content_names(self) -> None:
-        obs = Observation(
-            contents=[
-                Content.from_data("goal text", name="goal"),
-                Content.from_data("some html", name="html_content"),
-            ]
-        )
-        env_step = EnvironmentOutput(obs=obs)
-        result = xray_utils.get_step_details_markdown(env_step, None)
-        assert "goal" in result
-        assert "html_content" in result
-
-
-# ---------------------------------------------------------------------------
-# TestGetTaskGoal
-# ---------------------------------------------------------------------------
-
-
-class TestGetTaskGoal:
-    def test_returns_placeholder_for_none(self) -> None:
-        result = xray_utils.get_task_goal(None)
-        assert "No trajectory" in result
-
-    def test_returns_placeholder_for_empty_trajectory(self) -> None:
-        traj = Trajectory(id="empty")
-        result = xray_utils.get_task_goal(traj)
-        assert "No goal text found" in result
-
-    def test_extracts_first_text_from_first_env_step(self) -> None:
-        obs = Observation(contents=[Content.from_data("Buy 3 apples", name="goal")])
-        env_out = EnvironmentOutput(obs=obs)
-        traj = Trajectory(id="t1")
-        traj.steps.append(TrajectoryStep(output=env_out))
-        result = xray_utils.get_task_goal(traj)
-        assert result == "Buy 3 apples"
-
-    def test_skips_agent_steps_at_start(self) -> None:
-        agent_out = AgentOutput(actions=[])
-        obs = Observation(contents=[Content.from_data("Real goal")])
-        env_out = EnvironmentOutput(obs=obs)
-        traj = Trajectory(id="t1")
-        traj.steps.append(TrajectoryStep(output=agent_out))
-        traj.steps.append(TrajectoryStep(output=env_out))
-        result = xray_utils.get_task_goal(traj)
-        assert result == "Real goal"
-
-    def test_skips_image_contents(self, red_image: Image.Image) -> None:
-        obs = Observation(
-            contents=[
-                Content.from_data(red_image, name="screenshot"),
-                Content.from_data("Goal text after image"),
-            ]
-        )
-        env_out = EnvironmentOutput(obs=obs)
-        traj = Trajectory(id="t1")
-        traj.steps.append(TrajectoryStep(output=env_out))
-        result = xray_utils.get_task_goal(traj)
-        assert result == "Goal text after image"
-
-    def test_skips_whitespace_only_content(self) -> None:
-        obs = Observation(
-            contents=[
-                Content.from_data("   \n  "),
-                Content.from_data("Actual goal"),
-            ]
-        )
-        env_out = EnvironmentOutput(obs=obs)
-        traj = Trajectory(id="t1")
-        traj.steps.append(TrajectoryStep(output=env_out))
-        result = xray_utils.get_task_goal(traj)
-        assert result == "Actual goal"
-
-
-# ---------------------------------------------------------------------------
-# TestGetAgentActionMarkdown
-# ---------------------------------------------------------------------------
-
-
-class TestGetAgentActionMarkdown:
-    def test_returns_terminal_placeholder_for_none(self) -> None:
-        result = xray_utils.get_agent_action_markdown(None)
-        assert "Terminal" in result or "terminal" in result
-
-    def test_returns_no_actions_placeholder_when_empty(self) -> None:
-        agent_out = AgentOutput(actions=[])
-        result = xray_utils.get_agent_action_markdown(agent_out)
-        assert "No actions" in result
-
-    def test_formats_as_function_call(self) -> None:
-        action = Action(name="browser_click", arguments={"bid": "a42", "button": "left"})
-        agent_out = AgentOutput(actions=[action])
-        result = xray_utils.get_agent_action_markdown(agent_out)
-        assert "browser_click" in result
-        assert "bid" in result
-        assert "a42" in result
-
-    def test_uses_backtick_code_format(self) -> None:
-        action = Action(name="noop", arguments={})
-        agent_out = AgentOutput(actions=[action])
-        result = xray_utils.get_agent_action_markdown(agent_out)
-        assert "`noop()`" in result
-
-    def test_truncates_long_string_arguments(self) -> None:
-        long_text = "x" * 300
-        action = Action(name="browser_type", arguments={"text": long_text})
-        agent_out = AgentOutput(actions=[action])
-        result = xray_utils.get_agent_action_markdown(agent_out)
-        assert "…" in result
-        assert "x" * 300 not in result
-
-    def test_renders_multiple_actions(self) -> None:
-        actions = [
-            Action(name="browser_click", arguments={"bid": "a1"}),
-            Action(name="browser_type", arguments={"bid": "b1", "text": "hello"}),
-        ]
-        agent_out = AgentOutput(actions=actions)
-        result = xray_utils.get_agent_action_markdown(agent_out)
-        assert "browser_click" in result
-        assert "browser_type" in result
-
-    def test_formats_non_string_arguments(self) -> None:
-        action = Action(name="scroll", arguments={"delta_x": 0, "delta_y": 100, "relative": True})
-        agent_out = AgentOutput(actions=[action])
-        result = xray_utils.get_agent_action_markdown(agent_out)
-        assert "delta_y=100" in result
-        assert "relative=True" in result
-
-    def test_empty_arguments_dict(self) -> None:
-        action = Action(name="noop", arguments={})
-        agent_out = AgentOutput(actions=[action])
-        result = xray_utils.get_agent_action_markdown(agent_out)
-        assert "noop()" in result
-
-
-# ---------------------------------------------------------------------------
-# TestGetPairedStepDetailsMarkdown
-# ---------------------------------------------------------------------------
-
-
-class TestGetPairedStepDetailsMarkdown:
-    def test_returns_placeholder_when_env_none(self) -> None:
-        result = xray_utils.get_paired_step_details_markdown(None, None, None, None)
-        assert "No step selected" in result
-
-    def test_contains_env_section(self, env_step_done_success: EnvironmentOutput) -> None:
-        result = xray_utils.get_paired_step_details_markdown(env_step_done_success, None, None, None)
-        assert "Environment" in result
-
-    def test_contains_terminal_marker_when_no_agent(self, env_step_done_success: EnvironmentOutput) -> None:
-        result = xray_utils.get_paired_step_details_markdown(env_step_done_success, None, None, None)
-        assert "terminal" in result.lower() or "No agent action" in result
-
-    def test_contains_agent_section_when_agent_present(
-        self,
-        env_step_done_success: EnvironmentOutput,
-        agent_step_with_llm_call: AgentOutput,
-    ) -> None:
-        result = xray_utils.get_paired_step_details_markdown(
-            env_step_done_success, agent_step_with_llm_call, None, None
-        )
-        assert "Agent" in result
-        assert "click" in result
-
-    def test_includes_env_duration_from_traj_step(self, env_step_done_success: EnvironmentOutput) -> None:
-        ts = TrajectoryStep(output=env_step_done_success, start_time=0.0, end_time=3.0)
-        result = xray_utils.get_paired_step_details_markdown(env_step_done_success, None, ts, None)
-        assert "3.0s" in result
-
-    def test_includes_agent_duration_from_traj_step(
-        self,
-        env_step_done_success: EnvironmentOutput,
-        agent_step_with_llm_call: AgentOutput,
-    ) -> None:
-        env_ts = TrajectoryStep(output=env_step_done_success, start_time=0.0, end_time=1.0)
-        agent_ts = TrajectoryStep(output=agent_step_with_llm_call, start_time=1.0, end_time=4.5)
-        result = xray_utils.get_paired_step_details_markdown(
-            env_step_done_success, agent_step_with_llm_call, env_ts, agent_ts
-        )
-        assert "3.5s" in result
-
-    def test_shows_reward_for_done_step(self, env_step_done_success: EnvironmentOutput) -> None:
-        result = xray_utils.get_paired_step_details_markdown(env_step_done_success, None, None, None)
-        assert "1.00" in result
-
-
-# ---------------------------------------------------------------------------
-# TestGetPairedErrorMarkdown
-# ---------------------------------------------------------------------------
-
-
-class TestGetPairedErrorMarkdown:
-    def test_no_errors_returns_message(self) -> None:
-        env_out = EnvironmentOutput(obs=Observation.from_text("ok"))
-        result = xray_utils.get_paired_error_markdown(env_out, None)
-        assert "No errors" in result
-
-    def test_shows_env_error(self) -> None:
-        err = StepError(error_type="TimeoutError", exception_str="timed out", stack_trace="...")
-        env_out = EnvironmentOutput(obs=Observation.from_text("failed"), error=err)
-        result = xray_utils.get_paired_error_markdown(env_out, None)
-        assert "TimeoutError" in result
-        assert "timed out" in result
-
-    def test_shows_agent_error(self) -> None:
-        err = StepError(error_type="ValueError", exception_str="bad input", stack_trace="...")
-        agent_out = AgentOutput(error=err)
-        env_out = EnvironmentOutput(obs=Observation.from_text("ok"))
-        result = xray_utils.get_paired_error_markdown(env_out, agent_out)
-        assert "ValueError" in result
-
-    def test_shows_both_errors_when_present(self) -> None:
-        env_err = StepError(error_type="EnvError", exception_str="env failed", stack_trace="a")
-        agent_err = StepError(error_type="AgentError", exception_str="agent failed", stack_trace="b")
-        env_out = EnvironmentOutput(obs=Observation.from_text("ok"), error=env_err)
-        agent_out = AgentOutput(error=agent_err)
-        result = xray_utils.get_paired_error_markdown(env_out, agent_out)
-        assert "EnvError" in result
-        assert "AgentError" in result
-
-    def test_env_info_error_fallback(self) -> None:
-        env_out = EnvironmentOutput(obs=Observation.from_text("ok"), info={"error": "page crashed"})
-        result = xray_utils.get_paired_error_markdown(env_out, None)
-        assert "page crashed" in result
-
-    def test_no_errors_when_both_none(self) -> None:
-        env_out = EnvironmentOutput(obs=Observation.from_text("ok"))
-        agent_out = AgentOutput(actions=[])
-        result = xray_utils.get_paired_error_markdown(env_out, agent_out)
-        assert "No errors" in result
-
-
-# ---------------------------------------------------------------------------
-# TestGetChatBranchesWithMessageObjects
-# ---------------------------------------------------------------------------
-
-
-class TestGetChatBranchesWithMessageObjects:
-    """Tests for Message object handling (not just dicts) in get_chat_branches."""
-
-    def test_handles_litellm_message_objects(self) -> None:
-        """LLMCall.output is a Message object; prompts can also contain Message objects."""
-        config = LLMConfig(model_name="gpt-test")
-        prompt = Prompt(messages=[Message(role="user", content="Use a Message object")], tools=[])
-        llm_call = LLMCall(
-            tag="test", llm_config=config, prompt=prompt, output=Message(role="assistant", content="ok"), usage=Usage()
-        )
-        step = AgentOutput(llm_calls=[llm_call])
-        html = xray_utils.get_chat_branches(step)["test"]
-        assert "user" in html
-        assert "Use a Message object" in html
-
-    def test_handles_mixed_dict_and_message_in_messages(self) -> None:
-        config = LLMConfig(model_name="gpt-test")
-        prompt = Prompt(
-            messages=[
-                Message(role="system", content="System prompt from Message"),
-                {"role": "user", "content": "User dict message"},
-            ],
-            tools=[],
-        )
-        llm_call = LLMCall(
-            tag="test2", llm_config=config, prompt=prompt, output=Message(role="assistant", content="ok"), usage=Usage()
-        )
-        step = AgentOutput(llm_calls=[llm_call])
-        html = xray_utils.get_chat_branches(step)["test2"]
-        assert "system" in html
-        assert "System prompt from Message" in html
-        assert "User dict message" in html
-
-
-# ---------------------------------------------------------------------------
 # TestBuildStatusCell
 # ---------------------------------------------------------------------------
 
@@ -1405,7 +661,7 @@ class TestBuildStatusCell:
 
     def test_cancelled_symbol(self) -> None:
         cell = xray_utils._build_status_cell(["cancelled"])
-        assert "🚫" in cell
+        assert "⏹️" in cell
 
 
 # ---------------------------------------------------------------------------
@@ -1469,3 +725,219 @@ class TestGetLogsTabMarkdownEpisodeStatus:
         traj = Trajectory(id="t", metadata={})
         result = xray_utils.get_logs_tab_markdown(traj, "")
         assert "Episode Status" not in result
+
+
+class TestBuildProgressHtml:
+    def test_progress_label_and_bar_width(self) -> None:
+        html = xray_utils.build_progress_html(3, 4, 1)
+        assert "3/4 episodes completed" in html
+        assert "1 running" in html
+        assert "width:75.0%" in html
+
+    def test_no_ray_link_when_url_absent(self) -> None:
+        html = xray_utils.build_progress_html(1, 2, 0)
+        assert "Ray dashboard" not in html
+
+    def test_ray_dashboard_link_is_clickable(self) -> None:
+        html = xray_utils.build_progress_html(1, 2, 1, ray_dashboard_urls=[("exp_a", "http://127.0.0.1:8265")])
+        assert '<a href="http://127.0.0.1:8265"' in html
+        assert 'target="_blank"' in html
+        assert "🔗 Ray dashboard" in html
+
+    def test_ray_dashboard_link_prefixes_name_for_multiple_experiments(self) -> None:
+        html = xray_utils.build_progress_html(
+            0,
+            2,
+            0,
+            exp_names=["exp_a", "exp_b"],
+            ray_dashboard_urls=[("exp_a", "http://a:8265"), ("exp_b", "http://b:8265")],
+        )
+        assert "exp_a: " in html
+        assert "exp_b: " in html
+        assert html.count("🔗 Ray dashboard") == 2
+
+    def test_ray_dashboard_url_is_escaped(self) -> None:
+        html = xray_utils.build_progress_html(
+            0, 1, 0, ray_dashboard_urls=[("e", 'http://x"><script>alert(1)</script>')]
+        )
+        assert "<script>alert(1)</script>" not in html
+        assert "&lt;script&gt;" in html
+
+
+class TestPickDirectory:
+    """The native folder-picker wrapper (mocked — no real dialog)."""
+
+    def test_returns_chosen_dir_on_macos(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        target = tmp_path / "results"
+        target.mkdir()
+        monkeypatch.setattr(xray_utils.sys, "platform", "darwin")
+
+        class _R:
+            returncode = 0
+            stdout = f"{target}\n"
+
+        monkeypatch.setattr(xray_utils.subprocess, "run", lambda *a, **k: _R())
+        assert xray_utils.pick_directory(tmp_path) == target
+
+    def test_returns_none_on_cancel(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        monkeypatch.setattr(xray_utils.sys, "platform", "darwin")
+
+        class _R:
+            returncode = 1  # user cancelled
+            stdout = ""
+
+        monkeypatch.setattr(xray_utils.subprocess, "run", lambda *a, **k: _R())
+        assert xray_utils.pick_directory(tmp_path) is None
+
+    def test_returns_none_when_choice_is_not_a_dir(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        monkeypatch.setattr(xray_utils.sys, "platform", "darwin")
+
+        class _R:
+            returncode = 0
+            stdout = f"{tmp_path / 'nope'}\n"
+
+        monkeypatch.setattr(xray_utils.subprocess, "run", lambda *a, **k: _R())
+        assert xray_utils.pick_directory(tmp_path) is None
+
+
+class TestEligibility:
+    """Submission-eligibility badge logic (clean + submit)."""
+
+    def test_scan_category_missing_dir_is_broken(self, tmp_path: Path) -> None:
+        # No experiment_record.json → classify returns broken; helper never raises.
+        assert xray_utils.scan_category(tmp_path / "nope") == "broken"
+
+    def test_badge_uses_category_when_no_submission(self, tmp_path: Path) -> None:
+        badge = xray_utils.eligibility_badge(tmp_path, "submittable")
+        assert "submittable" in badge
+        assert xray_utils.eligibility_badge(tmp_path, "broken").count("broken")
+
+    def test_submitted_state_overrides_category(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        submissions.record_submitted(
+            tmp_path, "journal", evaluation_id="me/exp", schema_version="1.0", pr_url="http://x"
+        )
+        badge = xray_utils.eligibility_badge(tmp_path, "broken")  # category ignored once submitted
+        assert "✅" in badge and "registry" in badge
+
+    def test_eee_and_registry_both_submitted(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        submissions.record_submitted(tmp_path, "journal", evaluation_id="a", schema_version="1.0")
+        submissions.record_submitted(tmp_path, "eee", evaluation_id="b", schema_version="0.2")
+        badge = xray_utils.eligibility_badge(tmp_path, "submittable")
+        assert "registry" in badge and "eee" in badge
+
+
+def test_rejected_state_shows_rejected_badge(tmp_path: Path) -> None:
+    from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+    submissions.record_rejected(tmp_path, "journal", reason="broken: 58/279 episodes errored")
+    badge = xray_utils.eligibility_badge(tmp_path, "already_submitted")
+    assert "🚫 rejected" in badge and "58/279" in badge
+
+
+class TestIsArchivable:
+    """Archive auto-select: broken + rejected + explicit-debug (is_official=False),
+    but not submittable / submitted / a bare subset_review."""
+
+    def test_broken_is_archivable(self, tmp_path: Path) -> None:
+        assert xray_utils.is_archivable(tmp_path, "broken")
+
+    def test_explicit_debug_is_archivable(self, tmp_path: Path) -> None:
+        # is_official=False ⇒ operator marked it debug ⇒ archivable, even though
+        # the category is subset_review.
+        assert xray_utils.is_archivable(tmp_path, "subset_review", is_official=False)
+
+    def test_submittable_and_bare_subset_review_are_not(self, tmp_path: Path) -> None:
+        assert not xray_utils.is_archivable(tmp_path, "submittable")
+        assert not xray_utils.is_archivable(tmp_path, "subset_review")  # is_official None ⇒ keep
+        assert not xray_utils.is_archivable(tmp_path, "subset_review", is_official=True)
+
+    def test_rejected_run_is_archivable(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        submissions.record_rejected(tmp_path, "journal", reason="broken: all episodes ghost")
+        # category is already_submitted (a journal decision exists) — but it's a rejection.
+        assert xray_utils.is_archivable(tmp_path, "already_submitted")
+
+    def test_official_is_an_absolute_keep(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        # is_official=True pins the run — never archived, even broken or rejected.
+        assert not xray_utils.is_archivable(tmp_path, "broken", is_official=True)
+        submissions.record_rejected(tmp_path, "journal", reason="broken: errors")
+        assert not xray_utils.is_archivable(tmp_path, "already_submitted", is_official=True)
+
+    def test_successfully_submitted_run_is_not_archivable(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        submissions.record_submitted(tmp_path, "journal", evaluation_id="a", schema_version="1.0")
+        assert not xray_utils.is_archivable(tmp_path, "already_submitted")
+
+
+class TestIsSubmittablePick:
+    """Submit auto-select: submittable AND not already submitted / mid-submission."""
+
+    def test_clean_submittable_is_picked(self, tmp_path: Path) -> None:
+        assert xray_utils.is_submittable_pick(tmp_path, "submittable")
+
+    def test_non_submittable_category_is_not(self, tmp_path: Path) -> None:
+        assert not xray_utils.is_submittable_pick(tmp_path, "broken")
+        assert not xray_utils.is_submittable_pick(tmp_path, "subset_review")
+
+    def test_already_submitted_is_not_re_picked(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        submissions.record_submitted(tmp_path, "journal", evaluation_id="a", schema_version="1.0")
+        # Even if the cached category still says submittable, a submitted run is skipped.
+        assert not xray_utils.is_submittable_pick(tmp_path, "submittable")
+
+    def test_pending_is_not_re_picked(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        submissions.record_pending(tmp_path, "journal")
+        assert not xray_utils.is_submittable_pick(tmp_path, "submittable")
+
+    def test_failed_is_still_picked_for_retry(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        submissions.record_failed(tmp_path, "journal", reason="transient")
+        assert xray_utils.is_submittable_pick(tmp_path, "submittable")
+
+
+class TestSubmissionBadges:
+    def test_pending_badge(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        submissions.record_pending(tmp_path, "journal")
+        assert "submitting" in xray_utils.eligibility_badge(tmp_path, "submittable")
+
+    def test_failed_badge_shows_reason(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        submissions.record_failed(tmp_path, "journal", reason="push timed out")
+        badge = xray_utils.eligibility_badge(tmp_path, "submittable")
+        assert "submit failed" in badge and "push timed out" in badge
+
+
+class TestPersistBrokenRejection:
+    def test_broken_dir_gets_durable_rejection(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        exp = tmp_path / "broken_run"
+        exp.mkdir()  # no experiment_record.json → classifies broken
+        assert xray_utils.persist_broken_rejection(exp) is True
+        assert submissions.read(exp)["journal"]["status"] == "rejected"
+        # Idempotent: a second call sees the prior decision and does nothing new.
+        assert xray_utils.persist_broken_rejection(exp) is False
+
+    def test_decided_dir_is_left_alone(self, tmp_path: Path) -> None:
+        from cube_harness.reproducibility import submissions  # noqa: PLC0415
+
+        exp = tmp_path / "submitted_run"
+        exp.mkdir()
+        submissions.record_submitted(exp, "journal", evaluation_id="a", schema_version="1.0")
+        assert xray_utils.persist_broken_rejection(exp) is False
+        assert submissions.read(exp)["journal"]["status"] == "submitted"

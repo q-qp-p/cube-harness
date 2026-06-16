@@ -17,13 +17,29 @@ It does NOT define the task/benchmark/tool protocol — that's cube-standard. If
 tempted to change base class signatures (`Task.step`, `Benchmark.setup`, etc.), you're
 in the wrong repo; go to cube-standard and start with an openspec change proposal.
 
+## Routing contributors
+
+Point people to the right place instead of answering ad hoc:
+
+- **Wanting to change the harness** ("can we add a field / change this API?") → the
+  project-wide [Design Philosophy](https://the-ai-alliance.github.io/cube-standard/design-philosophy)
+  (universal: lean, additive-isn't-free, friction-not-a-wall, escape hatches) + the
+  [Constitution](.claude/rules/constitution.md) (the 5 pillars), then
+  [CONTRIBUTING.md § Changing cube-harness](CONTRIBUTING.md#changing-cube-harness). Triage
+  an actual RFC with the `/gatekeep-rfc` skill
+  ([`.claude/skills/gatekeep-rfc/`](.claude/skills/gatekeep-rfc)).
+- **A need that touches a cube-standard contract** (`Task`/`Benchmark`/`Tool`/`Action`/
+  `Observation`) → **upstream**: route them to cube-standard's `/gatekeep-rfc` and an
+  `openspec/changes/` proposal *there* first; the harness change follows.
+- Default to the **smaller change**: a recipe, an agent/infra config, or a new use-case —
+  not new shared surface.
+
 ## Package layout
 
 ```
 src/cube_harness/
 ├── core.py                     # AgentOutput, Trajectory, TrajectoryStep, ActionSpace
 ├── agent.py                    # AgentConfig, Agent (abstract)
-├── tool.py                     # ToolWithTelemetry, AsyncToolWithTelemetry (OTel wrappers)
 ├── llm.py                      # LLM, LLMConfig, Prompt, LLMCall, Usage (LiteLLM wrapper)
 ├── episode.py                  # Episode, EpisodeConfig, MAX_STEPS
 ├── experiment.py               # Experiment, ExpResult
@@ -37,24 +53,21 @@ src/cube_harness/
 │   ├── react.py                # ReAct agent (primary)
 │   ├── genny.py                # Genny agent (context-aware, rolling summaries)
 │   └── legacy_generic_agent.py # Deprecated XML-tag agent — see DEPRECATED.md
-├── tools/
-│   ├── browsergym.py           # BrowserGym integration
-│   ├── computer.py             # Docker-based computer-use
-│   └── mcp.py                  # MCP client tool (consume external MCP servers)
 ├── action_spaces/              # Protocol definitions for action sets
 ├── benchmarks/                 # Legacy in-tree benchmarks (miniwob, workarena) — most now live in cubes/
 ├── metrics/tracer.py           # OpenTelemetry tracer, Ray env-var propagation
 ├── analyze/
+│   ├── investigator/           # Per-trajectory blame; use_cases/{general_blame, profiling, agent_scaffolding, hinter, fix_audit}
 │   ├── xray.py                 # Gradio-based XRay viewer
 │   ├── inspect_results.py      # CLI-ish inspection helpers
 │   └── xray_utils.py
+├── auto_cube/                  # Auto-CUBE outer-loop methodology; use_cases/<name>/ each with SKILL.md (loaded by /auto-cube-<name>)
 └── mcp/                        # Serve harness tools AS an MCP server
     ├── server.py
     └── convert.py
 
 cubes/                          # External benchmark packages (arithmetic, osworld, swebench-*, terminalbench, webarena-verified, workarena, miniwob)
 recipes/                        # Example experiment scripts
-meta_agent/                     # Iterative eval-analyze-fix loop
 tests/                          # pytest suite
 ```
 
@@ -66,7 +79,6 @@ Each spec is the authoritative contract for its layer.
 |-------|--------|------|
 | Core types (Trajectory, AgentOutput) | `cube_harness.core` | [core/spec.md](openspec/specs/core/spec.md) |
 | Agent | `cube_harness.agent` | [agent/spec.md](openspec/specs/agent/spec.md) |
-| Tool (telemetry wrapper) | `cube_harness.tool` | [tool/spec.md](openspec/specs/tool/spec.md) |
 | LLM wrapper | `cube_harness.llm` | [llm/spec.md](openspec/specs/llm/spec.md) |
 | Episode | `cube_harness.episode` | [episode/spec.md](openspec/specs/episode/spec.md) |
 | Experiment + runners | `cube_harness.experiment`, `cube_harness.exp_runner` | [experiment/spec.md](openspec/specs/experiment/spec.md) |
@@ -87,20 +99,43 @@ is governed by cube-standard's specs. Don't subclass those here — consume them
 - **Lean diffs.** Make the minimal change that solves the problem. Avoid verbose additions, unnecessary abstractions, and duplicated logic that already exists elsewhere. If existing code can be reused or consolidated, do it. A hard-to-review diff is a liability.
 - **Think long-term.** Every change should age well. Ask whether today's shortcut becomes tomorrow's debt — and whether the design could evolve cleanly if requirements change.
 
+## Explore before you plan or decide
+
+CUBE spans several repos, so a local view rarely tells the whole story. Build the wider picture before planning a change or making a call:
+
+- **Trace real usage**, not just the definition — `Grep` call sites, subclasses, and tests across the repo (incl. `cubes/*`, `recipes/*`).
+- **Read the spec and the code together** — the spec is intent (can be stale); the code is what runs.
+- **Mind the repo boundary** — cube-harness consumes cube-standard's `cube.*` contracts, so their signature changes belong upstream; core changes (`core.py`/`agent.py`/`llm.py`) ripple into every cube and recipe.
+- **Fan out with subagents** (`Explore`, `general-purpose`) for broad searches — keep the conclusion without burning context.
+
 ## Code review
+
+**Default branch is `dev`** — base all PRs off it, not `main`.
 
 **Sign your commits.** Every commit needs a `Signed-off-by` line (`git commit -s`). DCO is enforced by CI — unsigned commits will be blocked.
 
 PRs are reviewed with `/code-review` ([plugin docs](https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md)), which audits changes against these guidelines. Write PRs as if a reviewer will check each principle above against the diff.
+
+**Auto-fix provenance.** Auto-CUBE-produced fixes carry `# auto-fix(N)↓ … # /auto-fix(N)`
+markers + a one-line machine-readable footnote at module bottom (`N` = PR number
+for L0/L1, design-debt issue number for L2/L3). When a diff touches an `auto-fix`
+region or its footnote, treat it as a possibly-rotten marker (review rule AF-001).
+Methodology (Fix Report, L0–L3 tiers, rot lint):
+[`openspec/specs/auto-fix/spec.md`](openspec/specs/auto-fix/spec.md). Human
+entry point for running the loop:
+[`src/cube_harness/auto_cube/README.md`](src/cube_harness/auto_cube/README.md)
+(use-cases live at `src/cube_harness/auto_cube/use_cases/<name>/`; the
+default is `debug`, invoked as `/auto-cube` or `/auto-cube-debug`).
 
 ## Workflow for code changes
 
 1. **Find the relevant spec** — which layer? Start there.
 2. **Check "Invariants" and "Gotchas"** — these are the traps.
 3. **Check `openspec/changes/`** — someone may already be proposing your change.
-4. **For substantive contract changes**, write a delta spec
-   (`openspec/changes/<name>/deltas.md` with ADDED / MODIFIED / REMOVED sections)
-   before coding. Archive to `openspec/changes/archive/YYYY-MM-DD-<name>/` when done.
+4. **For breaking or multi-invariant contract changes**, open `openspec/changes/<name>/`
+   (`proposal.md` + `deltas.md`, ADDED / MODIFIED / REMOVED) before coding; additive changes
+   just edit the spec. Keep proposals concise — see [openspec/README.md](openspec/README.md).
+   Archive to `openspec/changes/archive/YYYY-MM-DD-<name>/` when done.
 5. **Constitution alignment:** every change is reviewed against the
    [constitution](.claude/rules/constitution.md) and [review rules](.claude/rules/review-rules.md).
 
@@ -115,6 +150,7 @@ PRs are reviewed with `/code-review` ([plugin docs](https://github.com/anthropic
   Live `Task`, `Tool`, `Benchmark`, `Agent` objects never cross process boundaries.
 - **Trajectory steps alternate** env → agent → env → agent in persistence order.
 - **Trace-first:** every new long-running operation should get a `tracer.span()`.
+- **CLIs use Typer** — new scripts/recipes that need a CLI should use `typer.run(main)` with `typer.Option`-annotated args (FastAPI-style: type hints + docstring become `--help`). `scripts/experiments_report.py` is the canonical example. Don't add new `argparse` boilerplate.
 
 ## Development commands
 
@@ -123,11 +159,24 @@ make install            # uv sync --all-extras
 make test               # full pytest
 make debug              # small end-to-end run
 make xray               # open the trajectory viewer
+make report             # markdown table of experiments in ~/cube_harness_results/ (forward args with ARGS="--last 10")
 make lint               # uvx ruff check --fix && uvx ruff format  (auto-fixes in place)
 make lint-check         # uvx ruff check --diff && uvx ruff format --diff  (read-only, what CI runs)
 make review PR=<n>      # check out a PR and wire up any cross-repo cube-standard dependency
 uv run recipes/hello_miniwob.py   # example run
 ```
+
+### Test categories
+
+| Type | When | Where |
+|---|---|---|
+| Unit (`pytest tests/`) | every iteration | `tests/` — fast, no external deps. What CI runs by default (`-m "not slow and not live_api"`). |
+| `slow` (`pytest -m slow`) | when touching the marked area | `tests/` with `@pytest.mark.slow`. Excluded from CI by default — Ray-based timing tests are flaky on shared GitHub Actions runners; reliable locally. |
+| `integration` (`pytest -m integration`) | when touching the marked area | `tests/` with `@pytest.mark.integration`. Setup details (Playwright install, etc.) live in the marker's docstring in `pyproject.toml`. |
+| `live_api` (`pytest -m live_api`) | when touching the marked area | `tests/` with `@pytest.mark.live_api`. Hits a real LLM provider; costs money; auto-skips without `ANTHROPIC_API_KEY`; never runs in CI. |
+| Smoke (`scripts/smoke/*.py`) | when a PR touches plumbing unit tests can't reach | Standalone scripts a coding agent runs to verify end-to-end behavior. Never CI. May stand up real infrastructure or call external APIs; minutes-long runs are fine. Each prints `SMOKE OK/FAIL/SKIP: <name>` (exit 0/1/2). Discover with `find . -path '*/scripts/smoke/*.py'`. |
+
+Smokes are the coding agent's judgment call — for a PR that touches a marked area, pick the relevant smokes, adapt the environment (auth, credentials, profiles), and iterate until green. **Reflex:** when adding complex new code, drop a smoke alongside it; a green end-to-end run is the strongest signal the change actually works as intended.
 
 Always run `make lint` before finishing a task. `ruff check` and `ruff format` are
 **separate passes** — running only one is not enough for CI.
@@ -170,9 +219,43 @@ installs all workspace packages with `uv pip install -e cube-standard --all-pack
 - **cubes/\*** — individual benchmark packages. Each has its own `debug.py` that
   `cube test <name>` runs. Changes to a cube are usually local to its directory.
 
-## Meta-agent
+## Investigator use cases
 
-`meta_agent/` holds an iterative eval-analyze-fix loop used for improving agents.
-The skill `/meta-agent` drives it (see `.claude/skills/meta-agent/`). Journal
-entries live in `meta_agent/journal/` for historical context — not part of the
-build.
+`src/cube_harness/analyze/investigator/use_cases/<name>/` is the investigator recipe
+catalog. Each subdirectory is one use case:
+
+- **`general_blame`** — default. Closed-world blame attribution per episode.
+- **`profiling`** — narrower taxonomy aimed at scaffold-level inefficiency.
+- **`agent_scaffolding`** — deep loop-pathology diagnosis.
+- **`hinter`** — extract `task_hints[task_id]` candidates from failed
+  episodes.
+
+Each use_case has a `recipe.py` (Pydantic `InvestigatorRecipe`) and a `SKILL.md`
+(skill description for the Auto-CUBE orchestrator that dispatches it).
+`scripts/sync_investigator_skills.py` symlinks SKILL.md files into
+`.claude/skills/investigator-<name>` so Claude Code picks them up.
+
+Per-batch synthesis (`meta_analysis.json` + `.md`) is mirrored into
+`<journal-dir>/<experiment>/` (default `~/auto_cube/`; Auto-CUBE points it at
+the per-session `~/auto_cube/<session-id>/journal/`) for cross-iteration
+narrative — the only artefact the Investigator writes outside the experiment dir.
+
+## Auto-CUBE use cases
+
+`src/cube_harness/auto_cube/use_cases/<name>/` is the outer-loop
+use-case catalog. Each subdirectory holds a `SKILL.md` (loaded as the
+Auto-CUBE agent's system prompt) and an optional `investigator_extra.md`
+(biasing fragment appended to per-episode Investigator prompts via
+`InvestigationConfig.extra_prompt_fragment` / `ch-investigate --extra-prompt`).
+
+- **`debug`** — default. Curious-scientist methodology, sparse coverage
+  across `task × infra × tool × model × agent-config`, ships Fix Report
+  PRs. Invoked as `/auto-cube` (alias) or `/auto-cube-debug`.
+- **`hinter`** — raises benchmark performance by adding knowledge at the
+  right regularization level (low-reg task-hint cheat → promoted task
+  clarification / benchmark prompt / action description / new action /
+  system prompt). Invoked as `/auto-cube-hinter`.
+
+`scripts/sync_auto_cube_skills.py` symlinks each SKILL.md into
+`.claude/skills/auto-cube-<name>/` and creates the `auto-cube → debug`
+alias. To create a new use-case, invoke `/new-auto-cube-use-case`.

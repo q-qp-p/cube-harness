@@ -28,14 +28,21 @@ from tests.conftest import (
 
 
 def _make_failing_benchmark() -> CubeBenchmarkConfig:
-    """BenchmarkConfig whose single task raises on the first step() call."""
+    """BenchmarkConfig whose single task raises on terminal evaluate().
+
+    Under agent-owns-loop the agent's tool calls go through MonitoredTool
+    + the toolbox; `task.step` isn't called anymore. Injecting failure
+    via `evaluate()` exercises the equivalent error-capture path — when
+    Episode's terminal evaluate raises, `recorder.record_failure` writes
+    an LLMCallEvent and the outer except tags status FAILED + re-raises."""
 
     class _FailingTask(MockCubeTask):
-        def step(self, actions):
+        def evaluate(self, obs=None):
+            _ = obs
             raise RuntimeError("injected step failure")
 
     class _FailingTaskConfig(MockCubeTaskConfig):
-        def make(self, runtime_context=None, container_backend=None) -> _FailingTask:
+        def make(self, runtime_context=None) -> _FailingTask:
             return _FailingTask(
                 metadata=self.metadata,
                 tool_config=self.tool_config or MockToolConfig(),
@@ -51,14 +58,19 @@ def _make_failing_benchmark() -> CubeBenchmarkConfig:
 
 
 def _make_neverending_benchmark(max_steps: int) -> CubeBenchmarkConfig:
-    """BenchmarkConfig whose single task never sets done=True, triggering MAX_STEPS_REACHED."""
+    """BenchmarkConfig whose single task never signals done — `finished()`
+    returns False, so the only termination is `Budget.max_agent_steps`
+    (BudgetExceeded → MAX_STEPS_REACHED). Pair it with an agent that never
+    emits `final_step` (otherwise that raises AgentStop and ends the episode)."""
+    _ = max_steps  # parameter retained for backward-compat with old test signature
 
     class _NeverDoneTask(MockCubeTask):
-        def step(self, actions):
-            return EnvironmentOutput(obs=Observation.from_text("still going"), reward=0.0, done=False)
+        def finished(self, obs=None) -> bool:
+            _ = obs
+            return False  # never done — Budget.max_agent_steps is the only termination
 
     class _NeverDoneTaskConfig(MockCubeTaskConfig):
-        def make(self, runtime_context=None, container_backend=None) -> _NeverDoneTask:
+        def make(self, runtime_context=None) -> _NeverDoneTask:
             return _NeverDoneTask(
                 metadata=self.metadata,
                 tool_config=self.tool_config or MockToolConfig(),
@@ -835,14 +847,40 @@ class TestStatusBasedSelection:
         assert "injected step failure" in (status.error_message or "")
         assert status.ended_at is not None
 
-    def test_worker_writes_max_steps_reached_when_loop_exhausted(self, tmp_dir, mock_agent_config) -> None:
-        """RUNNING → MAX_STEPS_REACHED: loop exhausts max_steps without done=True."""
+    def test_worker_writes_max_steps_reached_when_loop_exhausted(self, tmp_dir) -> None:
+        """RUNNING → MAX_STEPS_REACHED: loop exhausts max_steps without done=True.
+
+        Uses a local agent that emits a real action (`click`) — the default
+        MockAgent emits `final_step` (STOP_ACTION), which MonitoredTool
+        catches and turns into a TaskDone for a clean exit; we want the
+        opposite here so the budget runs out instead."""
+        from cube.core import Action as _Action
+
+        from cube_harness.agent import Agent as _Agent
+        from cube_harness.agent import AgentConfig as _AgentConfig
+        from cube_harness.core import AgentOutput as _AgentOutput
+
+        class _NeverStopsAgentConfig(_AgentConfig):
+            def make(self, action_set=None, **kwargs):
+                _ = action_set, kwargs
+                return _NeverStopsAgent(self)
+
+        class _NeverStopsAgent(_Agent):
+            name = "never-stops"
+            description = ""
+            input_content_types = []
+            output_content_types = []
+
+            def step(self, obs):
+                _ = obs
+                return _AgentOutput(actions=[_Action(name="click", arguments={"element_id": "btn"})])
+
         max_steps = 2
         benchmark_config = _make_neverending_benchmark(max_steps)
         exp = Experiment(
             name="test_max_steps_status",
             output_dir=tmp_dir,
-            agent_config=mock_agent_config,
+            agent_config=_NeverStopsAgentConfig(),
             benchmark_config=benchmark_config,
             max_steps=max_steps,
         )
@@ -917,6 +955,7 @@ class TestKillStaleWorkersRaceGuard:
                 storage,
                 results,
                 step_timeout_s=1.0,
+                setup_timeout_s=1.0,
                 cancel_grace_s=1.0,
             )
 
@@ -954,6 +993,7 @@ class TestKillStaleWorkersRaceGuard:
                 storage,
                 results,
                 step_timeout_s=1.0,
+                setup_timeout_s=1.0,
                 cancel_grace_s=1.0,
             )
 
@@ -962,7 +1002,101 @@ class TestKillStaleWorkersRaceGuard:
         written: EpisodeStatus = mock_write.call_args[0][1]
         assert written.status == "CANCELLED"
         assert written.error_type == "StepTimeout"
-        assert "Step 5 exceeded" in written.error_message
+        assert "step 5 exceeded" in written.error_message
         # Recorded as a failure.
         assert traj_id in results.failures
         assert fake_ref not in episodes_in_progress
+
+
+class TestKillStaleWorkersOrphanCapacityGate:
+    """Capacity-gated QUEUED-orphan detection in _kill_stale_workers (PR #459).
+
+    A QUEUED episode is cancelled as an orphan ONLY when Ray has had idle worker
+    capacity it left unused (`idle_capacity_since`), sustained past `orphan_threshold_s`.
+    All slots busy ⇒ never cancelled, so a deep queue (tasks >> workers) doesn't
+    false-cancel tasks legitimately waiting their turn (the 141/300 regression).
+    """
+
+    def _queued(self, task_id: str, started_age: float) -> EpisodeStatus:
+        return EpisodeStatus(
+            status="QUEUED",
+            task_id=task_id,
+            episode_id=0,
+            started_at=time.time() - started_age,
+            last_heartbeat_at=None,
+            current_step=0,
+            retry_count=0,
+        )
+
+    def _run(self, storage: "FileStorage", queued: EpisodeStatus, *, idle_capacity_since, reads=None):
+        traj_id = f"{queued.task_id}_ep0"
+        fake_ref = MagicMock()
+        ref_to_traj_id = {fake_ref: traj_id}
+        results = ExpResult(exp_id="test", tasks_num=1)
+        episodes_in_progress = [fake_ref]
+        with (
+            patch("cube_harness.exp_runner.ray.cancel") as mock_cancel,
+            patch.object(storage, "read_episode_status", side_effect=reads or [queued, queued]),
+            patch.object(storage, "write_episode_status") as mock_write,
+        ):
+            _kill_stale_workers(
+                episodes_in_progress,
+                ref_to_traj_id,
+                storage,
+                results,
+                step_timeout_s=1.0,
+                setup_timeout_s=1.0,
+                cancel_grace_s=1.0,
+                orphan_threshold_s=3600.0,
+                idle_capacity_since=idle_capacity_since,
+            )
+        return mock_cancel, mock_write, results, episodes_in_progress, fake_ref, traj_id
+
+    def test_orphaned_queued_with_sustained_idle_is_cancelled(self, tmp_dir) -> None:
+        """Idle capacity sustained past the threshold while QUEUED → genuine orphan → cancelled."""
+        storage = FileStorage(tmp_dir)
+        cancel, write, results, in_progress, ref, traj_id = self._run(
+            storage, self._queued("orphan", 7200), idle_capacity_since=time.time() - 7200
+        )
+        cancel.assert_called_once_with(ref, force=True)
+        assert write.call_args[0][1].status == "CANCELLED"
+        assert write.call_args[0][1].error_type == "OrphanedInQueue"
+        assert traj_id in results.failures
+        assert ref not in in_progress
+
+    def test_queued_not_cancelled_when_workers_busy(self, tmp_dir) -> None:
+        """THE FIX: long-QUEUED but all workers busy (idle_capacity_since=None) → not cancelled."""
+        storage = FileStorage(tmp_dir)
+        cancel, write, results, in_progress, ref, traj_id = self._run(
+            storage, self._queued("waiting", 7200), idle_capacity_since=None, reads=[self._queued("waiting", 7200)]
+        )
+        cancel.assert_not_called()
+        write.assert_not_called()
+        assert traj_id not in results.failures
+        assert ref in in_progress
+
+    def test_queued_not_cancelled_on_momentary_idle_dip(self, tmp_dir) -> None:
+        """Idle capacity that only just appeared (turnover dip) → not cancelled; must persist."""
+        storage = FileStorage(tmp_dir)
+        cancel, write, results, in_progress, ref, traj_id = self._run(
+            storage,
+            self._queued("dip", 7200),
+            idle_capacity_since=time.time() - 5,
+            reads=[self._queued("dip", 7200)],
+        )
+        cancel.assert_not_called()
+        write.assert_not_called()
+        assert ref in in_progress
+
+    def test_fresh_queued_not_cancelled(self, tmp_dir) -> None:
+        """Recently QUEUED (< threshold) not cancelled even with idle capacity available."""
+        storage = FileStorage(tmp_dir)
+        cancel, write, results, in_progress, ref, traj_id = self._run(
+            storage,
+            self._queued("fresh", 30),
+            idle_capacity_since=time.time() - 7200,
+            reads=[self._queued("fresh", 30)],
+        )
+        cancel.assert_not_called()
+        write.assert_not_called()
+        assert ref in in_progress
